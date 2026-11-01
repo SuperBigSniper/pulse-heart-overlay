@@ -115,9 +115,11 @@ class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
                     ],
                     selected: {_heartRateOnly},
                     showSelectedIcon: false,
-                    onSelectionChanged: (selection) {
-                      unawaited(_changeFilter(selection.first));
-                    },
+                    onSelectionChanged: widget.controller.isBusy
+                        ? null
+                        : (selection) {
+                            unawaited(_changeFilter(selection.first));
+                          },
                   ),
                 ),
                 _ScanSummary(

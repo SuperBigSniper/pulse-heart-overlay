@@ -167,6 +167,9 @@ class HeartRateController extends ChangeNotifier {
   Future<void> refreshAvailability() => _refreshAvailability();
 
   Future<void> startScan({required bool heartRateOnly}) async {
+    if (isBusy) {
+      return;
+    }
     if (_isScanning) {
       await stopScan(notify: false);
     }
@@ -250,11 +253,7 @@ class HeartRateController extends ChangeNotifier {
 
     try {
       await UniversalBle.requestPermissions();
-      await UniversalBle.connect(
-        device.deviceId,
-        timeout: const Duration(seconds: 20),
-      );
-
+      await _connectTransport(device);
       final services = await device.discoverServices(
         timeout: const Duration(seconds: 20),
       );
@@ -323,6 +322,27 @@ class HeartRateController extends ChangeNotifier {
       _errorMessage = _connectionError(error);
       _notify();
       return false;
+    }
+  }
+
+  Future<void> _connectTransport(BleDevice device) async {
+    try {
+      await UniversalBle.connect(
+        device.deviceId,
+        timeout: const Duration(seconds: 20),
+      );
+    } on Object catch (error) {
+      if (!isBluetoothAccessDenied(error)) {
+        rethrow;
+      }
+
+      await _disconnectTransport(showStatus: false);
+      _pendingDevice = device;
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      await UniversalBle.connect(
+        device.deviceId,
+        timeout: const Duration(seconds: 20),
+      );
     }
   }
 
@@ -557,6 +577,10 @@ class HeartRateController extends ChangeNotifier {
     if (error is HeartRateSessionException) {
       return error.message;
     }
+    if (isBluetoothAccessDenied(error)) {
+      return 'Windows 拒绝访问手环。请关闭其他正在使用该手环的应用，'
+          '在系统蓝牙设置中断开手环后重试。';
+    }
     final message = _readableError(error);
     if (message.toLowerCase().contains('timeout')) {
       return '连接超时，请让手环靠近电脑后重试。';
@@ -606,4 +630,18 @@ bool advertisesHeartRateService(BleDevice device) {
       HeartRateController.heartRateServiceUuid,
     ),
   );
+}
+
+bool isBluetoothAccessDenied(Object error) {
+  if (error is UniversalBleException) {
+    if (error.code == UniversalBleErrorCode.accessDenied ||
+        error.code == UniversalBleErrorCode.bluetoothUnauthorized) {
+      return true;
+    }
+  }
+  final message = error.toString().toLowerCase();
+  return message.contains('accessdenied') ||
+      message.contains('access denied') ||
+      message.contains('access is denied') ||
+      message.contains('拒绝访问');
 }
