@@ -5,6 +5,73 @@ import 'package:flutter/material.dart';
 import '../heart_rate/heartbeat_timing.dart';
 import '../theme/app_theme.dart';
 
+class HeartbeatMotion extends StatefulWidget {
+  const HeartbeatMotion({
+    super.key,
+    required this.beatsPerMinute,
+    required this.active,
+    this.speedScale = 1,
+    required this.builder,
+  });
+
+  final int? beatsPerMinute;
+  final bool active;
+  final double speedScale;
+  final Widget Function(BuildContext context, Animation<double> animation)
+  builder;
+
+  @override
+  State<HeartbeatMotion> createState() => _HeartbeatMotionState();
+}
+
+class _HeartbeatMotionState extends State<HeartbeatMotion>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  Duration get _duration {
+    if (!widget.active) {
+      return const Duration(milliseconds: 2600);
+    }
+    return heartbeatPeriodFor(
+      widget.beatsPerMinute,
+      speedScale: widget.speedScale,
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: _duration)
+      ..repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant HeartbeatMotion oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active != widget.active ||
+        oldWidget.beatsPerMinute != widget.beatsPerMinute ||
+        oldWidget.speedScale != widget.speedScale) {
+      _restartWithCurrentPhase();
+    }
+  }
+
+  void _restartWithCurrentPhase() {
+    _controller.duration = _duration;
+    _controller.repeat(period: _duration);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return widget.builder(context, _controller);
+  }
+}
+
 class HeartbeatVisualizer extends StatefulWidget {
   const HeartbeatVisualizer({
     super.key,
@@ -15,6 +82,7 @@ class HeartbeatVisualizer extends StatefulWidget {
     this.showGuides = true,
     this.showShadow = true,
     this.speedScale = 1,
+    this.animation,
   });
 
   final int? beatsPerMinute;
@@ -24,6 +92,7 @@ class HeartbeatVisualizer extends StatefulWidget {
   final bool showGuides;
   final bool showShadow;
   final double speedScale;
+  final Animation<double>? animation;
 
   @override
   State<HeartbeatVisualizer> createState() => _HeartbeatVisualizerState();
@@ -36,8 +105,10 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: _duration)
-      ..repeat();
+    _controller = AnimationController(vsync: this, duration: _duration);
+    if (widget.animation == null) {
+      _controller.repeat();
+    }
   }
 
   Duration get _duration {
@@ -53,14 +124,27 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
   @override
   void didUpdateWidget(covariant HeartbeatVisualizer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.animation == null && widget.animation != null) {
+      _controller.stop();
+      return;
+    }
+    if (oldWidget.animation != null && widget.animation == null) {
+      _restartWithCurrentPhase();
+      return;
+    }
+    if (widget.animation != null) {
+      return;
+    }
     if (oldWidget.active != widget.active ||
         oldWidget.beatsPerMinute != widget.beatsPerMinute ||
         oldWidget.speedScale != widget.speedScale) {
-      _controller.duration = _duration;
-      if (!_controller.isAnimating) {
-        _controller.repeat();
-      }
+      _restartWithCurrentPhase();
     }
+  }
+
+  void _restartWithCurrentPhase() {
+    _controller.duration = _duration;
+    _controller.repeat(period: _duration);
   }
 
   @override
@@ -71,6 +155,7 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
 
   @override
   Widget build(BuildContext context) {
+    final animation = widget.animation ?? _controller;
     return Semantics(
       label: widget.active && widget.beatsPerMinute != null
           ? '当前心率 ${widget.beatsPerMinute} 次每分钟'
@@ -79,11 +164,12 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
         child: SizedBox.square(
           dimension: widget.size,
           child: AnimatedBuilder(
-            animation: _controller,
+            animation: animation,
             builder: (context, child) {
               return CustomPaint(
                 painter: _HeartbeatPainter(
-                  progress: _controller.value,
+                  progress: animation.value,
+                  strength: heartbeatStrengthFor(widget.beatsPerMinute),
                   active: widget.active,
                   demo: widget.demo,
                   showGuides: widget.showGuides,
@@ -101,6 +187,7 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
 class _HeartbeatPainter extends CustomPainter {
   _HeartbeatPainter({
     required this.progress,
+    required this.strength,
     required this.active,
     required this.demo,
     required this.showGuides,
@@ -108,6 +195,7 @@ class _HeartbeatPainter extends CustomPainter {
   });
 
   final double progress;
+  final double strength;
   final bool active;
   final bool demo;
   final bool showGuides;
@@ -123,10 +211,10 @@ class _HeartbeatPainter extends CustomPainter {
     final accent = demo ? AppColors.amber : AppColors.coral;
 
     if (showGuides) {
-      _paintGuides(canvas, center, radius, impulse, accent);
+      _paintGuides(canvas, center, radius, impulse, strength, accent);
     }
 
-    final scale = active ? 1.0 + impulse * 0.085 : 1.0;
+    final scale = active ? 1.0 + impulse * strength : 1.0;
     final heartPath = _buildHeartPath(center, radius * 0.46);
 
     canvas.save();
@@ -151,6 +239,7 @@ class _HeartbeatPainter extends CustomPainter {
     Offset center,
     double radius,
     double impulse,
+    double strength,
     Color accent,
   ) {
     final guidePaint = Paint()
@@ -181,7 +270,7 @@ class _HeartbeatPainter extends CustomPainter {
       arcPaint,
     );
 
-    final pulseOpacity = active ? impulse * 0.26 : 0.04;
+    final pulseOpacity = active ? impulse * (0.15 + strength * 1.1) : 0.04;
     canvas.drawCircle(
       center,
       radius * (0.50 + impulse * 0.30),
@@ -265,6 +354,7 @@ class _HeartbeatPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _HeartbeatPainter oldDelegate) {
     return oldDelegate.progress != progress ||
+        oldDelegate.strength != strength ||
         oldDelegate.active != active ||
         oldDelegate.demo != demo ||
         oldDelegate.showGuides != showGuides ||
@@ -272,68 +362,34 @@ class _HeartbeatPainter extends CustomPainter {
   }
 }
 
-class EcgLine extends StatefulWidget {
+class EcgLine extends StatelessWidget {
   const EcgLine({
     super.key,
+    required this.animation,
     required this.beatsPerMinute,
     required this.active,
     this.color = AppColors.coral,
-    this.speedScale = 1,
+    this.verticalAlignment = 0.5,
   });
 
+  final Animation<double> animation;
   final int? beatsPerMinute;
   final bool active;
   final Color color;
-  final double speedScale;
-
-  @override
-  State<EcgLine> createState() => _EcgLineState();
-}
-
-class _EcgLineState extends State<EcgLine> with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: heartbeatPeriodFor(
-        widget.beatsPerMinute,
-        speedScale: widget.speedScale,
-      ),
-    )..repeat();
-  }
-
-  @override
-  void didUpdateWidget(covariant EcgLine oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.beatsPerMinute != widget.beatsPerMinute ||
-        oldWidget.active != widget.active ||
-        oldWidget.speedScale != widget.speedScale) {
-      _controller.duration = heartbeatPeriodFor(
-        widget.beatsPerMinute,
-        speedScale: widget.speedScale,
-      );
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+  final double verticalAlignment;
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: _controller,
+      animation: animation,
       builder: (context, child) {
         return CustomPaint(
           painter: _EcgPainter(
-            progress: _controller.value,
-            active: widget.active,
-            color: widget.color,
+            progress: animation.value,
+            strength: heartbeatStrengthFor(beatsPerMinute),
+            active: active,
+            color: color,
+            verticalAlignment: verticalAlignment,
           ),
         );
       },
@@ -344,25 +400,32 @@ class _EcgLineState extends State<EcgLine> with SingleTickerProviderStateMixin {
 class _EcgPainter extends CustomPainter {
   _EcgPainter({
     required this.progress,
+    required this.strength,
     required this.active,
     required this.color,
+    required this.verticalAlignment,
   });
 
   final double progress;
+  final double strength;
   final bool active;
   final Color color;
+  final double verticalAlignment;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final centerY = size.height / 2;
+    final centerY = size.height * verticalAlignment;
     final path = Path();
+    final impulse = active ? heartbeatImpulse(progress) : 0.0;
+    final waveScale = 1.0 + impulse * strength * 1.8;
     const sampleCount = 180;
 
     for (var index = 0; index <= sampleCount; index++) {
-      final x = index / sampleCount * size.width;
-      final cycle = (index / sampleCount + progress) % 1;
+      final horizontalFraction = index / sampleCount;
+      final x = horizontalFraction * size.width;
+      final cycle = ecgCycleFor(horizontalFraction, progress);
       final value = active ? _ecgValue(cycle) : 0.0;
-      final y = centerY - value * size.height * 0.21;
+      final y = centerY - value * size.height * 0.21 * waveScale;
       if (index == 0) {
         path.moveTo(x, y);
       } else {
@@ -377,14 +440,28 @@ class _EcgPainter extends CustomPainter {
         ..color = AppColors.ink.withValues(alpha: 0.08)
         ..strokeWidth = 1,
     );
+    if (active && impulse > 0.01) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 7
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = color.withValues(alpha: impulse * (0.08 + strength * 0.6))
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+      );
+    }
     canvas.drawPath(
       path,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = active ? 3.2 : 2
+        ..strokeWidth = active ? 2.8 + impulse * strength * 8 : 2
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
-        ..color = color.withValues(alpha: active ? 0.72 : 0.20),
+        ..color = color.withValues(
+          alpha: active ? 0.54 + impulse * 0.26 : 0.20,
+        ),
     );
   }
 
@@ -405,7 +482,9 @@ class _EcgPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _EcgPainter oldDelegate) {
     return oldDelegate.progress != progress ||
+        oldDelegate.strength != strength ||
         oldDelegate.active != active ||
-        oldDelegate.color != color;
+        oldDelegate.color != color ||
+        oldDelegate.verticalAlignment != verticalAlignment;
   }
 }

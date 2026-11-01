@@ -1,16 +1,33 @@
 import 'dart:math' as math;
 
-Duration heartbeatPeriodFor(int? beatsPerMinute, {double speedScale = 1}) {
-  final safeBpm = (beatsPerMinute ?? 72).clamp(30, 220).toDouble();
-  final safeSpeedScale = speedScale.clamp(0.4, 2.0).toDouble();
-  return Duration(milliseconds: (60000 / safeBpm * safeSpeedScale).round());
+const _ecgCenterOffset = 0.27;
+const minimumHeartbeatSpeedScale = 0.5;
+const maximumHeartbeatSpeedScale = 2.0;
+
+double visualHeartbeatRateFor(int? beatsPerMinute, {double speedScale = 1}) {
+  final bpm = (beatsPerMinute ?? 60).clamp(30, 220).toDouble();
+  final safeSpeedScale = speedScale
+      .clamp(minimumHeartbeatSpeedScale, maximumHeartbeatSpeedScale)
+      .toDouble();
+  return bpm / 60 * safeSpeedScale;
 }
 
-double smoothHeartRate(double? previous, int next) {
-  if (previous == null) {
-    return next.toDouble();
-  }
-  return previous * 0.72 + next * 0.28;
+Duration heartbeatPeriodFor(int? beatsPerMinute, {double speedScale = 1}) {
+  return Duration(
+    milliseconds:
+        (1000 / visualHeartbeatRateFor(beatsPerMinute, speedScale: speedScale))
+            .round(),
+  );
+}
+
+double heartbeatStrengthFor(int? beatsPerMinute) {
+  final safeBpm = (beatsPerMinute ?? 72).clamp(30, 220).toDouble();
+  final intensity = ((safeBpm - 45) / 80).clamp(0.0, 1.0);
+  return 0.06 + intensity * 0.09;
+}
+
+double ecgCycleFor(double horizontalFraction, double progress) {
+  return (horizontalFraction - progress - _ecgCenterOffset) % 1.0;
 }
 
 double heartbeatImpulse(double progress) {

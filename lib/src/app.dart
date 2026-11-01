@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -28,6 +29,8 @@ class _HeartRateAppState extends State<HeartRateApp> {
   static const _overlayAnimationScaleKey = 'overlay.animationScale';
   static const _overlayTextScaleKey = 'overlay.textScale';
   static const _overlayAnimationSpeedKey = 'overlay.animationSpeed';
+  static const _overlayWidthKey = 'overlay.width';
+  static const _overlayHeightKey = 'overlay.height';
 
   late final HeartRateController _controller;
   GameOverlaySettings _overlaySettings = GameOverlaySettings.defaults;
@@ -41,6 +44,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
   bool _isScalingOverlay = false;
   double _pendingOverlayScale = 0;
   int _overlayResizeGeneration = 0;
+  Size _overlayMaximumSize = const Size(10000, 10000);
 
   @override
   void initState() {
@@ -94,6 +98,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
       return;
     }
     _isChangingWindowMode = true;
+    final maximumSize = overlayMaximumSizeFor(context);
 
     try {
       _dashboardWindowState = await _captureDashboardWindowState();
@@ -107,9 +112,17 @@ class _HeartRateAppState extends State<HeartRateApp> {
         setState(() => _isGameOverlay = true);
       }
 
-      const overlaySize = GameOverlayPage.windowSize;
+      _overlayMaximumSize = maximumSize;
+      final overlaySize = Size(
+        _overlaySettings.overlayWidth
+            .clamp(GameOverlayPage.minimumWindowSize.width, maximumSize.width)
+            .toDouble(),
+        _overlaySettings.overlayHeight
+            .clamp(GameOverlayPage.minimumWindowSize.height, maximumSize.height)
+            .toDouble(),
+      );
       await windowManager.setMinimumSize(GameOverlayPage.minimumWindowSize);
-      await windowManager.setMaximumSize(GameOverlayPage.maximumWindowSize);
+      await windowManager.setMaximumSize(maximumSize);
       await windowManager.setResizable(true);
       await windowManager.setTitleBarStyle(
         TitleBarStyle.hidden,
@@ -150,6 +163,12 @@ class _HeartRateAppState extends State<HeartRateApp> {
     _isChangingWindowMode = true;
 
     try {
+      try {
+        final overlayBounds = await windowManager.getBounds();
+        _rememberOverlaySize(overlayBounds.size);
+      } on Object catch (error) {
+        debugPrint('Unable to read overlay size: $error');
+      }
       final dashboardState = _dashboardWindowState;
       _overlayResizeSession = null;
       _pendingOverlayBounds = null;
@@ -279,6 +298,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
       startBounds: session.startBounds,
       corner: corner,
       totalDelta: totalDelta,
+      maximumSize: _overlayMaximumSize,
     );
     if (!_isWritingOverlayBounds) {
       unawaited(_flushOverlayBounds());
@@ -287,6 +307,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
 
   Future<void> _flushOverlayBounds() async {
     _isWritingOverlayBounds = true;
+    Rect? latestBounds;
     try {
       while (true) {
         final bounds = _pendingOverlayBounds;
@@ -294,6 +315,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
           break;
         }
         _pendingOverlayBounds = null;
+        latestBounds = bounds;
         await windowManager.setBounds(bounds);
       }
     } on Object catch (error) {
@@ -302,6 +324,8 @@ class _HeartRateAppState extends State<HeartRateApp> {
       _isWritingOverlayBounds = false;
       if (_pendingOverlayBounds != null) {
         unawaited(_flushOverlayBounds());
+      } else if (latestBounds != null) {
+        _rememberOverlaySize(latestBounds.size);
       }
     }
   }
@@ -326,13 +350,26 @@ class _HeartRateAppState extends State<HeartRateApp> {
         if (!_isGameOverlay || _isChangingWindowMode) {
           return;
         }
-        final size = (bounds.shortestSide + amount).clamp(
-          GameOverlayPage.minimumWindowSize.width,
-          GameOverlayPage.maximumWindowSize.width,
+        final minScale = math.max(
+          GameOverlayPage.minimumWindowSize.width / bounds.width,
+          GameOverlayPage.minimumWindowSize.height / bounds.height,
         );
+        final maxScale = math.min(
+          _overlayMaximumSize.width / bounds.width,
+          _overlayMaximumSize.height / bounds.height,
+        );
+        final scale = ((bounds.shortestSide + amount) / bounds.shortestSide)
+            .clamp(minScale, maxScale)
+            .toDouble();
+        final newSize = Size(bounds.width * scale, bounds.height * scale);
         await windowManager.setBounds(
-          Rect.fromCenter(center: bounds.center, width: size, height: size),
+          Rect.fromCenter(
+            center: bounds.center,
+            width: newSize.width,
+            height: newSize.height,
+          ),
         );
+        _rememberOverlaySize(newSize);
       }
     } on Object catch (error) {
       debugPrint('Unable to scale overlay: $error');
@@ -354,6 +391,12 @@ class _HeartRateAppState extends State<HeartRateApp> {
         animationSpeed:
             preferences.getDouble(_overlayAnimationSpeedKey) ??
             GameOverlaySettings.defaults.animationSpeed,
+        overlayWidth:
+            preferences.getDouble(_overlayWidthKey) ??
+            GameOverlaySettings.defaults.overlayWidth,
+        overlayHeight:
+            preferences.getDouble(_overlayHeightKey) ??
+            GameOverlaySettings.defaults.overlayHeight,
       );
       if (mounted) {
         setState(() => _overlaySettings = settings);
@@ -366,6 +409,28 @@ class _HeartRateAppState extends State<HeartRateApp> {
   void _updateOverlaySettings(GameOverlaySettings settings) {
     setState(() => _overlaySettings = settings);
     unawaited(_saveOverlaySettings(settings));
+  }
+
+  void _rememberOverlaySize(Size size) {
+    final width = size.width
+        .clamp(
+          GameOverlayPage.minimumWindowSize.width,
+          _overlayMaximumSize.width,
+        )
+        .toDouble();
+    final height = size.height
+        .clamp(
+          GameOverlayPage.minimumWindowSize.height,
+          _overlayMaximumSize.height,
+        )
+        .toDouble();
+    if ((_overlaySettings.overlayWidth - width).abs() < 0.5 &&
+        (_overlaySettings.overlayHeight - height).abs() < 0.5) {
+      return;
+    }
+    _updateOverlaySettings(
+      _overlaySettings.copyWith(overlayWidth: width, overlayHeight: height),
+    );
   }
 
   Future<void> _saveOverlaySettings(GameOverlaySettings settings) async {
@@ -381,6 +446,8 @@ class _HeartRateAppState extends State<HeartRateApp> {
           _overlayAnimationSpeedKey,
           settings.animationSpeed,
         ),
+        preferences.setDouble(_overlayWidthKey, settings.overlayWidth),
+        preferences.setDouble(_overlayHeightKey, settings.overlayHeight),
       ]);
     } on Object catch (error) {
       debugPrint('Unable to save overlay settings: $error');

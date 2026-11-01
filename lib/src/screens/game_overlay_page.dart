@@ -23,9 +23,8 @@ class GameOverlayPage extends StatelessWidget {
     required this.settings,
   });
 
-  static const windowSize = Size(220, 220);
-  static const minimumWindowSize = Size(140, 140);
-  static const maximumWindowSize = Size(480, 480);
+  static const windowSize = Size(90, 120);
+  static const minimumWindowSize = Size(10, 10);
 
   final HeartRateController controller;
   final VoidCallback onRestore;
@@ -82,6 +81,10 @@ class GameOverlayPage extends StatelessWidget {
                                   controller: controller,
                                   active: active,
                                   size: size,
+                                  canvasSize: Size(
+                                    constraints.maxWidth,
+                                    constraints.maxHeight,
+                                  ),
                                   settings: settings,
                                 );
                               },
@@ -111,42 +114,50 @@ Rect resizedOverlayBounds({
   required Rect startBounds,
   required OverlayResizeCorner corner,
   required Offset totalDelta,
+  required Size maximumSize,
 }) {
-  final signedDelta =
-      (totalDelta.dx * corner.horizontalSign +
-          totalDelta.dy * corner.verticalSign) /
-      2;
-  final size = (startBounds.shortestSide + signedDelta).clamp(
-    GameOverlayPage.minimumWindowSize.width,
-    GameOverlayPage.maximumWindowSize.width,
-  );
+  final width = (startBounds.width + totalDelta.dx * corner.horizontalSign)
+      .clamp(GameOverlayPage.minimumWindowSize.width, maximumSize.width)
+      .toDouble();
+  final height = (startBounds.height + totalDelta.dy * corner.verticalSign)
+      .clamp(GameOverlayPage.minimumWindowSize.height, maximumSize.height)
+      .toDouble();
 
   return switch (corner) {
     OverlayResizeCorner.topLeft => Rect.fromLTWH(
-      startBounds.right - size,
-      startBounds.bottom - size,
-      size,
-      size,
+      startBounds.right - width,
+      startBounds.bottom - height,
+      width,
+      height,
     ),
     OverlayResizeCorner.topRight => Rect.fromLTWH(
       startBounds.left,
-      startBounds.bottom - size,
-      size,
-      size,
+      startBounds.bottom - height,
+      width,
+      height,
     ),
     OverlayResizeCorner.bottomLeft => Rect.fromLTWH(
-      startBounds.right - size,
+      startBounds.right - width,
       startBounds.top,
-      size,
-      size,
+      width,
+      height,
     ),
     OverlayResizeCorner.bottomRight => Rect.fromLTWH(
       startBounds.left,
       startBounds.top,
-      size,
-      size,
+      width,
+      height,
     ),
   };
+}
+
+Size overlayMaximumSizeFor(BuildContext context) {
+  final view = View.of(context);
+  final displaySize = view.display.size / view.devicePixelRatio;
+  return Size(
+    math.max(GameOverlayPage.minimumWindowSize.width, displaySize.width),
+    math.max(GameOverlayPage.minimumWindowSize.height, displaySize.height),
+  );
 }
 
 extension on OverlayResizeCorner {
@@ -180,12 +191,14 @@ class _OverlayHeartRateView extends StatelessWidget {
     required this.controller,
     required this.active,
     required this.size,
+    required this.canvasSize,
     required this.settings,
   });
 
   final HeartRateController controller;
   final bool active;
   final double size;
+  final Size canvasSize;
   final GameOverlaySettings settings;
 
   @override
@@ -195,79 +208,95 @@ class _OverlayHeartRateView extends StatelessWidget {
     final heartSize = size * 0.61 * settings.animationScale;
     final numberSize = size * 0.2 * settings.textScale;
     final unitSize = math.max(9.0, size * 0.042 * settings.textScale);
+    final gap = math.max(1, size * 0.012).toDouble();
+    final contentHeight = heartSize + gap + numberSize * 0.9 + unitSize;
+    final ecgAlignment = canvasSize.height == 0
+        ? 0.5
+        : (((canvasSize.height - contentHeight) / 2 + heartSize * 0.51) /
+                  canvasSize.height)
+              .clamp(0.15, 0.85)
+              .toDouble();
     final shadow = Shadow(
       color: AppColors.ink.withValues(alpha: 0.92),
       blurRadius: math.max(6, size * 0.045),
       offset: const Offset(0, 1),
     );
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Positioned.fill(
-          child: IgnorePointer(
-            child: EcgLine(
-              beatsPerMinute: controller.animationBpm,
-              active: active,
-              color: controller.isDemo ? AppColors.amber : AppColors.coral,
-              speedScale: settings.animationSpeed,
-            ),
-          ),
-        ),
-        Center(
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                HeartbeatVisualizer(
-                  beatsPerMinute: controller.animationBpm,
+    return HeartbeatMotion(
+      beatsPerMinute: bpm,
+      active: active,
+      speedScale: settings.animationSpeed,
+      builder: (context, animation) {
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Positioned.fill(
+              child: IgnorePointer(
+                child: EcgLine(
+                  animation: animation,
+                  beatsPerMinute: bpm,
                   active: active,
-                  demo: controller.isDemo,
-                  size: heartSize,
-                  showGuides: false,
-                  showShadow: false,
-                  speedScale: settings.animationSpeed,
+                  color: controller.isDemo ? AppColors.amber : AppColors.coral,
+                  verticalAlignment: ecgAlignment,
                 ),
-                SizedBox(height: math.max(1, size * 0.012)),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 180),
-                  child: Text(
-                    bpm?.toString() ?? '--',
-                    key: ValueKey<int?>(bpm),
-                    maxLines: 1,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: isStale
-                          ? AppColors.white.withValues(alpha: 0.62)
-                          : AppColors.white,
-                      fontSize: numberSize,
-                      height: 0.9,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                      shadows: [shadow],
-                    ),
-                  ),
-                ),
-                Text(
-                  'BPM',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: isStale
-                        ? AppColors.white.withValues(alpha: 0.48)
-                        : const Color(0xFFD8E2E0),
-                    fontSize: unitSize,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0,
-                    shadows: [shadow],
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-        ),
-      ],
+            Center(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    HeartbeatVisualizer(
+                      animation: animation,
+                      beatsPerMinute: bpm,
+                      active: active,
+                      demo: controller.isDemo,
+                      size: heartSize,
+                      showGuides: false,
+                      showShadow: false,
+                    ),
+                    SizedBox(height: gap),
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 180),
+                      child: Text(
+                        bpm?.toString() ?? '--',
+                        key: ValueKey<int?>(bpm),
+                        maxLines: 1,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: isStale
+                              ? AppColors.white.withValues(alpha: 0.62)
+                              : AppColors.white,
+                          fontSize: numberSize,
+                          height: 0.9,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                          shadows: [shadow],
+                        ),
+                      ),
+                    ),
+                    Text(
+                      'BPM',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: isStale
+                            ? AppColors.white.withValues(alpha: 0.48)
+                            : const Color(0xFFD8E2E0),
+                        fontSize: unitSize,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0,
+                        shadows: [shadow],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

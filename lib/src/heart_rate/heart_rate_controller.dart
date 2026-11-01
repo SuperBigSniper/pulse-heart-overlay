@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import 'heart_rate_measurement.dart';
-import 'heartbeat_timing.dart';
 
 enum MonitorStatus { idle, connecting, connected, disconnecting, error }
 
@@ -54,7 +53,6 @@ class HeartRateController extends ChangeNotifier {
   int? _currentBpm;
   int? _minimumBpm;
   int? _maximumBpm;
-  double? _smoothedBpm;
   double? _latestRrIntervalMs;
   bool? _sensorContactDetected;
   bool _initialized = false;
@@ -82,7 +80,6 @@ class HeartRateController extends ChangeNotifier {
   int? get currentBpm => _currentBpm;
   int? get minimumBpm => _minimumBpm;
   int? get maximumBpm => _maximumBpm;
-  int? get animationBpm => _smoothedBpm?.round();
   double? get latestRrIntervalMs => _latestRrIntervalMs;
   bool? get sensorContactDetected => _sensorContactDetected;
   List<HeartRateSample> get history => List.unmodifiable(_history);
@@ -434,7 +431,6 @@ class HeartRateController extends ChangeNotifier {
     }
     _sensorContactDetected = measurement.sensorContactDetected;
     _lastReadingAt = DateTime.now();
-    _smoothedBpm = smoothHeartRate(_smoothedBpm, measurement.beatsPerMinute);
     _history.add(
       HeartRateSample(
         beatsPerMinute: measurement.beatsPerMinute,
@@ -538,7 +534,6 @@ class HeartRateController extends ChangeNotifier {
     _currentBpm = null;
     _minimumBpm = null;
     _maximumBpm = null;
-    _smoothedBpm = null;
     _latestRrIntervalMs = null;
     _sensorContactDetected = null;
     _lastReadingAt = null;

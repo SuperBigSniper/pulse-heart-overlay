@@ -90,7 +90,12 @@ class _WideLayout extends StatelessWidget {
             onOverlaySettingsChanged: onOverlaySettingsChanged,
           ),
         ),
-        Expanded(child: _MonitorMain(controller: controller)),
+        Expanded(
+          child: _MonitorMain(
+            controller: controller,
+            animationSpeed: overlaySettings.animationSpeed,
+          ),
+        ),
         SizedBox(width: 322, child: _DetailsPanel(controller: controller)),
       ],
     );
@@ -131,7 +136,10 @@ class _MediumLayout extends StatelessWidget {
                   children: [
                     SizedBox(
                       height: math.max(constraints.maxHeight, 670),
-                      child: _MonitorMain(controller: controller),
+                      child: _MonitorMain(
+                        controller: controller,
+                        animationSpeed: overlaySettings.animationSpeed,
+                      ),
                     ),
                     SizedBox(
                       height: 620,
@@ -176,7 +184,13 @@ class _CompactLayout extends StatelessWidget {
               onOverlaySettingsChanged: onOverlaySettingsChanged,
             ),
           ),
-          SizedBox(height: 660, child: _MonitorMain(controller: controller)),
+          SizedBox(
+            height: 660,
+            child: _MonitorMain(
+              controller: controller,
+              animationSpeed: overlaySettings.animationSpeed,
+            ),
+          ),
           SizedBox(height: 620, child: _DetailsPanel(controller: controller)),
         ],
       ),
@@ -493,9 +507,10 @@ class _Sidebar extends StatelessWidget {
 }
 
 class _MonitorMain extends StatelessWidget {
-  const _MonitorMain({required this.controller});
+  const _MonitorMain({required this.controller, required this.animationSpeed});
 
   final HeartRateController controller;
+  final double animationSpeed;
 
   @override
   Widget build(BuildContext context) {
@@ -543,48 +558,56 @@ class _MonitorMain extends StatelessWidget {
                 final heartSize = math
                     .min(availableWidth * 0.62, availableHeight * 0.50)
                     .clamp(154.0, 330.0);
-                return Stack(
-                  children: [
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: EcgLine(
-                          beatsPerMinute: controller.animationBpm,
-                          active:
-                              controller.hasReading &&
-                              (!controller.readingIsStale || controller.isDemo),
-                          color: controller.isDemo
-                              ? AppColors.amber
-                              : AppColors.coral,
-                        ),
-                      ),
-                    ),
-                    Center(
-                      child: SingleChildScrollView(
-                        physics: const NeverScrollableScrollPhysics(),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Transform.translate(
-                              offset: Offset(0, heartSize * 0.04),
-                              child: HeartbeatVisualizer(
-                                beatsPerMinute: controller.animationBpm,
-                                active:
-                                    controller.hasReading &&
-                                    (!controller.readingIsStale ||
-                                        controller.isDemo),
-                                demo: controller.isDemo,
-                                size: heartSize,
-                              ),
+                final active =
+                    controller.hasReading &&
+                    (!controller.readingIsStale || controller.isDemo);
+                return HeartbeatMotion(
+                  beatsPerMinute: controller.currentBpm,
+                  active: active,
+                  speedScale: animationSpeed,
+                  builder: (context, animation) {
+                    return Stack(
+                      children: [
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: EcgLine(
+                              animation: animation,
+                              beatsPerMinute: controller.currentBpm,
+                              active: active,
+                              color: controller.isDemo
+                                  ? AppColors.amber
+                                  : AppColors.coral,
+                              verticalAlignment: 0.44,
                             ),
-                            Transform.translate(
-                              offset: Offset(0, -heartSize * 0.04),
-                              child: _BpmReadout(controller: controller),
-                            ),
-                          ],
+                          ),
                         ),
-                      ),
-                    ),
-                  ],
+                        Center(
+                          child: SingleChildScrollView(
+                            physics: const NeverScrollableScrollPhysics(),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Transform.translate(
+                                  offset: Offset(0, heartSize * 0.04),
+                                  child: HeartbeatVisualizer(
+                                    animation: animation,
+                                    beatsPerMinute: controller.currentBpm,
+                                    active: active,
+                                    demo: controller.isDemo,
+                                    size: heartSize,
+                                  ),
+                                ),
+                                Transform.translate(
+                                  offset: Offset(0, -heartSize * 0.04),
+                                  child: _BpmReadout(controller: controller),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 );
               },
             ),

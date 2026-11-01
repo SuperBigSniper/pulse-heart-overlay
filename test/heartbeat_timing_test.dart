@@ -4,28 +4,68 @@ import 'package:heartbeat_monitor/src/heart_rate/heartbeat_timing.dart';
 import 'package:heartbeat_monitor/src/widgets/heartbeat_visualizer.dart';
 
 void main() {
-  test('heartbeat period follows BPM', () {
-    final slow = heartbeatPeriodFor(50);
-    final resting = heartbeatPeriodFor(75);
-    final fast = heartbeatPeriodFor(150);
+  test('visual heartbeat rate follows the measured BPM', () {
+    const anchors = <int, double>{
+      50: 50 / 60,
+      60: 1,
+      75: 1.25,
+      90: 1.5,
+      100: 100 / 60,
+      120: 2,
+    };
 
-    expect(slow.inMilliseconds, 1200);
-    expect(resting.inMilliseconds, 800);
-    expect(fast.inMilliseconds, 400);
-    expect(slow, greaterThan(resting));
-    expect(resting, greaterThan(fast));
+    for (final anchor in anchors.entries) {
+      expect(visualHeartbeatRateFor(anchor.key), closeTo(anchor.value, 1e-6));
+      expect(
+        heartbeatPeriodFor(anchor.key).inMilliseconds,
+        (1000 / anchor.value).round(),
+      );
+    }
   });
 
-  test(
-    'animation speed scale changes the pulse period without changing BPM',
-    () {
-      final normal = heartbeatPeriodFor(75);
-      final slower = heartbeatPeriodFor(75, speedScale: 1.5);
+  test('visual heartbeat rate changes continuously between tested values', () {
+    expect(visualHeartbeatRateFor(68), closeTo(68 / 60, 0.0000001));
+    expect(visualHeartbeatRateFor(82), closeTo(82 / 60, 0.0000001));
+    expect(heartbeatPeriodFor(68).inMilliseconds, 882);
+    expect(heartbeatPeriodFor(105).inMilliseconds, 571);
+    expect(heartbeatPeriodFor(115).inMilliseconds, 522);
+  });
 
-      expect(slower.inMilliseconds, 1200);
-      expect(slower, greaterThan(normal));
-    },
-  );
+  test('user speed scale changes the tempo without changing the BPM', () {
+    expect(
+      visualHeartbeatRateFor(90, speedScale: 1.5),
+      closeTo(2.25, 0.0000001),
+    );
+    expect(heartbeatPeriodFor(90, speedScale: 2).inMilliseconds, 333);
+    expect(heartbeatPeriodFor(90, speedScale: 0.5).inMilliseconds, 1333);
+    expect(
+      heartbeatPeriodFor(90, speedScale: 20),
+      heartbeatPeriodFor(90, speedScale: maximumHeartbeatSpeedScale),
+    );
+  });
+
+  test('visual heartbeat rate stays within the supported sensor range', () {
+    expect(visualHeartbeatRateFor(10), 0.5);
+    expect(visualHeartbeatRateFor(250), closeTo(220 / 60, 0.0000001));
+  });
+
+  test('heartbeat contraction strength follows emotional intensity', () {
+    final calm = heartbeatStrengthFor(50);
+    final elevated = heartbeatStrengthFor(100);
+    final intense = heartbeatStrengthFor(150);
+
+    expect(calm, lessThan(elevated));
+    expect(elevated, lessThan(intense));
+    expect(intense - calm, greaterThan(0.05));
+  });
+
+  test('ECG waveform scrolls from left to right with the heartbeat', () {
+    final laterCycle = ecgCycleFor(0.5, 0.2);
+    final earlierCycle = ecgCycleFor(0.5, 0.1);
+
+    expect(laterCycle, lessThan(earlierCycle));
+    expect(ecgCycleFor(0.505, 0), closeTo(0.235, 0.001));
+  });
 
   test('heartbeat impulse returns to rest during a cycle', () {
     expect(heartbeatImpulse(0.0), lessThan(0.06));
@@ -54,5 +94,44 @@ void main() {
     expect(find.byType(HeartbeatVisualizer), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 250));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('running animation adopts a new BPM period immediately', (
+    tester,
+  ) async {
+    final bpm = ValueNotifier<int>(60);
+    Animation<double>? animation;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ValueListenableBuilder<int>(
+          valueListenable: bpm,
+          builder: (context, value, child) {
+            return HeartbeatMotion(
+              beatsPerMinute: value,
+              active: true,
+              builder: (context, value) {
+                animation = value;
+                return const SizedBox.shrink();
+              },
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.pump(const Duration(milliseconds: 250));
+    final slowProgress = animation!.value;
+    expect(slowProgress, closeTo(0.25, 0.02));
+
+    bpm.value = 100;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    final fastProgress = animation!.value - slowProgress;
+
+    expect(fastProgress, closeTo(250 / 600, 0.02));
+    expect(fastProgress, greaterThan(slowProgress));
+
+    bpm.dispose();
   });
 }

@@ -30,10 +30,35 @@ void main() {
 
     expect(find.text('动画大小'), findsOneWidget);
     expect(find.text('心率文字大小'), findsOneWidget);
-    expect(find.text('动画节奏'), findsOneWidget);
-    expect(find.byType(Slider), findsNWidgets(3));
+    expect(find.text('心跳速度'), findsOneWidget);
+    expect(find.text('角落窗口'), findsOneWidget);
+    expect(find.text('宽度'), findsOneWidget);
+    expect(find.text('高度'), findsOneWidget);
+    expect(find.text('1.0×'), findsNWidgets(3));
+    expect(find.text('90 px'), findsOneWidget);
+    expect(find.text('120 px'), findsOneWidget);
+    expect(find.byType(Slider), findsNWidgets(5));
+    final widthSlider = tester.widget<Slider>(find.byType(Slider).at(3));
+    final heightSlider = tester.widget<Slider>(find.byType(Slider).at(4));
+    final screenSize = tester.view.physicalSize / tester.view.devicePixelRatio;
+    expect(widthSlider.min, 10);
+    expect(widthSlider.max, screenSize.width);
+    expect(heightSlider.min, 10);
+    expect(heightSlider.max, screenSize.height);
 
     await tester.drag(find.byType(Slider).first, const Offset(-500, 0));
+    await tester.pump();
+    await tester.ensureVisible(find.byType(Slider).at(2));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(Slider).at(2), const Offset(180, 0));
+    await tester.pump();
+    await tester.ensureVisible(find.byType(Slider).at(3));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(Slider).at(3), const Offset(180, 0));
+    await tester.pump();
+    await tester.ensureVisible(find.byType(Slider).at(4));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(Slider).at(4), const Offset(120, 0));
     await tester.pump();
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
@@ -42,6 +67,18 @@ void main() {
     expect(
       savedSettings!.animationScale,
       lessThan(GameOverlaySettings.defaults.animationScale),
+    );
+    expect(
+      savedSettings!.animationSpeed,
+      greaterThan(GameOverlaySettings.defaults.animationSpeed),
+    );
+    expect(
+      savedSettings!.overlayWidth,
+      greaterThan(GameOverlaySettings.defaults.overlayWidth),
+    );
+    expect(
+      savedSettings!.overlayHeight,
+      greaterThan(GameOverlaySettings.defaults.overlayHeight),
     );
   });
 }
