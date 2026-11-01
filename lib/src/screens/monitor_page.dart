@@ -6,18 +6,24 @@ import 'package:flutter/material.dart';
 import '../heart_rate/heart_rate_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/device_scanner_dialog.dart';
+import '../widgets/game_overlay_settings_dialog.dart';
 import '../widgets/heart_rate_chart.dart';
 import '../widgets/heartbeat_visualizer.dart';
+import 'game_overlay_settings.dart';
 
 class MonitorPage extends StatelessWidget {
   const MonitorPage({
     super.key,
     required this.controller,
     required this.onEnterGameOverlay,
+    required this.overlaySettings,
+    required this.onOverlaySettingsChanged,
   });
 
   final HeartRateController controller;
   final VoidCallback onEnterGameOverlay;
+  final GameOverlaySettings overlaySettings;
+  final ValueChanged<GameOverlaySettings> onOverlaySettingsChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -32,17 +38,23 @@ class MonitorPage extends StatelessWidget {
                 return _WideLayout(
                   controller: controller,
                   onEnterGameOverlay: onEnterGameOverlay,
+                  overlaySettings: overlaySettings,
+                  onOverlaySettingsChanged: onOverlaySettingsChanged,
                 );
               }
               if (constraints.maxWidth >= 760) {
                 return _MediumLayout(
                   controller: controller,
                   onEnterGameOverlay: onEnterGameOverlay,
+                  overlaySettings: overlaySettings,
+                  onOverlaySettingsChanged: onOverlaySettingsChanged,
                 );
               }
               return _CompactLayout(
                 controller: controller,
                 onEnterGameOverlay: onEnterGameOverlay,
+                overlaySettings: overlaySettings,
+                onOverlaySettingsChanged: onOverlaySettingsChanged,
               );
             },
           ),
@@ -56,10 +68,14 @@ class _WideLayout extends StatelessWidget {
   const _WideLayout({
     required this.controller,
     required this.onEnterGameOverlay,
+    required this.overlaySettings,
+    required this.onOverlaySettingsChanged,
   });
 
   final HeartRateController controller;
   final VoidCallback onEnterGameOverlay;
+  final GameOverlaySettings overlaySettings;
+  final ValueChanged<GameOverlaySettings> onOverlaySettingsChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -70,6 +86,8 @@ class _WideLayout extends StatelessWidget {
           child: _Sidebar(
             controller: controller,
             onEnterGameOverlay: onEnterGameOverlay,
+            overlaySettings: overlaySettings,
+            onOverlaySettingsChanged: onOverlaySettingsChanged,
           ),
         ),
         Expanded(child: _MonitorMain(controller: controller)),
@@ -83,10 +101,14 @@ class _MediumLayout extends StatelessWidget {
   const _MediumLayout({
     required this.controller,
     required this.onEnterGameOverlay,
+    required this.overlaySettings,
+    required this.onOverlaySettingsChanged,
   });
 
   final HeartRateController controller;
   final VoidCallback onEnterGameOverlay;
+  final GameOverlaySettings overlaySettings;
+  final ValueChanged<GameOverlaySettings> onOverlaySettingsChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -99,6 +121,8 @@ class _MediumLayout extends StatelessWidget {
               child: _Sidebar(
                 controller: controller,
                 onEnterGameOverlay: onEnterGameOverlay,
+                overlaySettings: overlaySettings,
+                onOverlaySettingsChanged: onOverlaySettingsChanged,
               ),
             ),
             Expanded(
@@ -128,10 +152,14 @@ class _CompactLayout extends StatelessWidget {
   const _CompactLayout({
     required this.controller,
     required this.onEnterGameOverlay,
+    required this.overlaySettings,
+    required this.onOverlaySettingsChanged,
   });
 
   final HeartRateController controller;
   final VoidCallback onEnterGameOverlay;
+  final GameOverlaySettings overlaySettings;
+  final ValueChanged<GameOverlaySettings> onOverlaySettingsChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -144,6 +172,8 @@ class _CompactLayout extends StatelessWidget {
               controller: controller,
               compact: true,
               onEnterGameOverlay: onEnterGameOverlay,
+              overlaySettings: overlaySettings,
+              onOverlaySettingsChanged: onOverlaySettingsChanged,
             ),
           ),
           SizedBox(height: 660, child: _MonitorMain(controller: controller)),
@@ -158,11 +188,15 @@ class _Sidebar extends StatelessWidget {
   const _Sidebar({
     required this.controller,
     required this.onEnterGameOverlay,
+    required this.overlaySettings,
+    required this.onOverlaySettingsChanged,
     this.compact = false,
   });
 
   final HeartRateController controller;
   final VoidCallback onEnterGameOverlay;
+  final GameOverlaySettings overlaySettings;
+  final ValueChanged<GameOverlaySettings> onOverlaySettingsChanged;
   final bool compact;
 
   @override
@@ -327,21 +361,48 @@ class _Sidebar extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 10),
-            OutlinedButton.icon(
-              onPressed: controller.hasReading && !controller.isBusy
-                  ? onEnterGameOverlay
-                  : null,
-              icon: const Icon(Icons.picture_in_picture_alt_outlined, size: 18),
-              label: const Text('游戏角落模式'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.white,
-                disabledForegroundColor: const Color(0xFF718583),
-                side: BorderSide(
-                  color: controller.hasReading
-                      ? const Color(0xFF5F7779)
-                      : const Color(0xFF31454C),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: controller.hasReading && !controller.isBusy
+                        ? onEnterGameOverlay
+                        : null,
+                    icon: const Icon(
+                      Icons.picture_in_picture_alt_outlined,
+                      size: 18,
+                    ),
+                    label: const Text('游戏角落模式'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.white,
+                      disabledForegroundColor: const Color(0xFF718583),
+                      side: BorderSide(
+                        color: controller.hasReading
+                            ? const Color(0xFF5F7779)
+                            : const Color(0xFF31454C),
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                IconButton.outlined(
+                  onPressed: () async {
+                    final settings = await showGameOverlaySettingsDialog(
+                      context,
+                      initialSettings: overlaySettings,
+                    );
+                    if (settings != null) {
+                      onOverlaySettingsChanged(settings);
+                    }
+                  },
+                  tooltip: '游戏角落设置',
+                  icon: const Icon(Icons.tune, size: 18),
+                  style: IconButton.styleFrom(
+                    foregroundColor: const Color(0xFFD5DEDC),
+                    side: const BorderSide(color: Color(0xFF40535A)),
+                  ),
+                ),
+              ],
             ),
             if (controller.errorMessage case final message?) ...[
               const SizedBox(height: 16),

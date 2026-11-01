@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:heartbeat_monitor/src/heart_rate/heart_rate_controller.dart';
 import 'package:heartbeat_monitor/src/screens/game_overlay_page.dart';
+import 'package:heartbeat_monitor/src/screens/game_overlay_settings.dart';
 import 'package:heartbeat_monitor/src/widgets/heartbeat_visualizer.dart';
 
 void main() {
@@ -23,6 +24,7 @@ void main() {
           onResizeStart: (_) {},
           onResize: (_, _) {},
           onScale: (_) {},
+          settings: GameOverlaySettings.defaults,
         ),
       ),
     );
@@ -43,6 +45,10 @@ void main() {
         (widget) => widget is Material && widget.color == Colors.transparent,
       ),
       findsOneWidget,
+    );
+    expect(
+      tester.getCenter(find.text('84')).dx,
+      closeTo(tester.getCenter(find.byType(HeartbeatVisualizer)).dx, 0.01),
     );
     expect(tester.takeException(), isNull);
 

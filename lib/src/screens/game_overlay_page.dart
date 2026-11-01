@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../heart_rate/heart_rate_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/heartbeat_visualizer.dart';
+import 'game_overlay_settings.dart';
 
 enum OverlayResizeCorner { topLeft, topRight, bottomLeft, bottomRight }
 
@@ -19,6 +20,7 @@ class GameOverlayPage extends StatelessWidget {
     required this.onResizeStart,
     required this.onResize,
     required this.onScale,
+    required this.settings,
   });
 
   static const windowSize = Size(220, 220);
@@ -31,6 +33,7 @@ class GameOverlayPage extends StatelessWidget {
   final ValueChanged<OverlayResizeCorner> onResizeStart;
   final void Function(OverlayResizeCorner corner, Offset delta) onResize;
   final ValueChanged<double> onScale;
+  final GameOverlaySettings settings;
 
   @override
   Widget build(BuildContext context) {
@@ -79,6 +82,7 @@ class GameOverlayPage extends StatelessWidget {
                                   controller: controller,
                                   active: active,
                                   size: size,
+                                  settings: settings,
                                 );
                               },
                             ),
@@ -176,19 +180,21 @@ class _OverlayHeartRateView extends StatelessWidget {
     required this.controller,
     required this.active,
     required this.size,
+    required this.settings,
   });
 
   final HeartRateController controller;
   final bool active;
   final double size;
+  final GameOverlaySettings settings;
 
   @override
   Widget build(BuildContext context) {
     final bpm = controller.currentBpm;
     final isStale = controller.readingIsStale && !controller.isDemo;
-    final heartSize = size * 0.84;
-    final numberSize = size * 0.24;
-    final unitSize = math.max(9.0, size * 0.052);
+    final heartSize = size * 0.61 * settings.animationScale;
+    final numberSize = size * 0.2 * settings.textScale;
+    final unitSize = math.max(9.0, size * 0.042 * settings.textScale);
     final shadow = Shadow(
       color: AppColors.ink.withValues(alpha: 0.92),
       blurRadius: math.max(6, size * 0.045),
@@ -204,51 +210,49 @@ class _OverlayHeartRateView extends StatelessWidget {
               beatsPerMinute: controller.animationBpm,
               active: active,
               color: controller.isDemo ? AppColors.amber : AppColors.coral,
+              speedScale: settings.animationSpeed,
             ),
           ),
         ),
         Center(
-          child: HeartbeatVisualizer(
-            beatsPerMinute: controller.animationBpm,
-            active: active,
-            demo: controller.isDemo,
-            size: heartSize,
-            showGuides: false,
-            showShadow: false,
-          ),
-        ),
-        Align(
-          alignment: const Alignment(0, 0.68),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
-                child: Text(
-                  bpm?.toString() ?? '--',
-                  key: ValueKey<int?>(bpm),
-                  maxLines: 1,
-                  style: TextStyle(
-                    color: isStale
-                        ? AppColors.white.withValues(alpha: 0.62)
-                        : AppColors.white,
-                    fontSize: numberSize,
-                    height: 0.9,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0,
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                    shadows: [shadow],
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                HeartbeatVisualizer(
+                  beatsPerMinute: controller.animationBpm,
+                  active: active,
+                  demo: controller.isDemo,
+                  size: heartSize,
+                  showGuides: false,
+                  showShadow: false,
+                  speedScale: settings.animationSpeed,
+                ),
+                SizedBox(height: math.max(1, size * 0.012)),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  child: Text(
+                    bpm?.toString() ?? '--',
+                    key: ValueKey<int?>(bpm),
+                    maxLines: 1,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: isStale
+                          ? AppColors.white.withValues(alpha: 0.62)
+                          : AppColors.white,
+                      fontSize: numberSize,
+                      height: 0.9,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                      shadows: [shadow],
+                    ),
                   ),
                 ),
-              ),
-              Padding(
-                padding: EdgeInsets.only(
-                  left: math.max(4, size * 0.025),
-                  bottom: math.max(2, size * 0.018),
-                ),
-                child: Text(
+                Text(
                   'BPM',
+                  textAlign: TextAlign.center,
                   style: TextStyle(
                     color: isStale
                         ? AppColors.white.withValues(alpha: 0.48)
@@ -259,8 +263,8 @@ class _OverlayHeartRateView extends StatelessWidget {
                     shadows: [shadow],
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ],

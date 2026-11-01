@@ -14,6 +14,7 @@ class HeartbeatVisualizer extends StatefulWidget {
     this.demo = false,
     this.showGuides = true,
     this.showShadow = true,
+    this.speedScale = 1,
   });
 
   final int? beatsPerMinute;
@@ -22,6 +23,7 @@ class HeartbeatVisualizer extends StatefulWidget {
   final bool demo;
   final bool showGuides;
   final bool showShadow;
+  final double speedScale;
 
   @override
   State<HeartbeatVisualizer> createState() => _HeartbeatVisualizerState();
@@ -42,14 +44,18 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
     if (!widget.active) {
       return const Duration(milliseconds: 2600);
     }
-    return heartbeatPeriodFor(widget.beatsPerMinute);
+    return heartbeatPeriodFor(
+      widget.beatsPerMinute,
+      speedScale: widget.speedScale,
+    );
   }
 
   @override
   void didUpdateWidget(covariant HeartbeatVisualizer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.active != widget.active ||
-        oldWidget.beatsPerMinute != widget.beatsPerMinute) {
+        oldWidget.beatsPerMinute != widget.beatsPerMinute ||
+        oldWidget.speedScale != widget.speedScale) {
       _controller.duration = _duration;
       if (!_controller.isAnimating) {
         _controller.repeat();
@@ -272,11 +278,13 @@ class EcgLine extends StatefulWidget {
     required this.beatsPerMinute,
     required this.active,
     this.color = AppColors.coral,
+    this.speedScale = 1,
   });
 
   final int? beatsPerMinute;
   final bool active;
   final Color color;
+  final double speedScale;
 
   @override
   State<EcgLine> createState() => _EcgLineState();
@@ -290,7 +298,10 @@ class _EcgLineState extends State<EcgLine> with SingleTickerProviderStateMixin {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: heartbeatPeriodFor(widget.beatsPerMinute),
+      duration: heartbeatPeriodFor(
+        widget.beatsPerMinute,
+        speedScale: widget.speedScale,
+      ),
     )..repeat();
   }
 
@@ -298,8 +309,12 @@ class _EcgLineState extends State<EcgLine> with SingleTickerProviderStateMixin {
   void didUpdateWidget(covariant EcgLine oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.beatsPerMinute != widget.beatsPerMinute ||
-        oldWidget.active != widget.active) {
-      _controller.duration = heartbeatPeriodFor(widget.beatsPerMinute);
+        oldWidget.active != widget.active ||
+        oldWidget.speedScale != widget.speedScale) {
+      _controller.duration = heartbeatPeriodFor(
+        widget.beatsPerMinute,
+        speedScale: widget.speedScale,
+      );
     }
   }
 

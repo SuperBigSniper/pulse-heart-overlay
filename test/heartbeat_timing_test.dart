@@ -16,9 +16,21 @@ void main() {
     expect(resting, greaterThan(fast));
   });
 
+  test(
+    'animation speed scale changes the pulse period without changing BPM',
+    () {
+      final normal = heartbeatPeriodFor(75);
+      final slower = heartbeatPeriodFor(75, speedScale: 1.5);
+
+      expect(slower.inMilliseconds, 1200);
+      expect(slower, greaterThan(normal));
+    },
+  );
+
   test('heartbeat impulse returns to rest during a cycle', () {
     expect(heartbeatImpulse(0.0), lessThan(0.06));
     expect(heartbeatImpulse(0.08), greaterThan(0.9));
+    expect(heartbeatImpulse(0.255), lessThan(0.1));
     expect(heartbeatImpulse(0.70), lessThan(0.01));
   });
 

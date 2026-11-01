@@ -3,10 +3,12 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'heart_rate/heart_rate_controller.dart';
 import 'screens/game_overlay_page.dart';
+import 'screens/game_overlay_settings.dart';
 import 'screens/monitor_page.dart';
 import 'theme/app_theme.dart';
 
@@ -23,7 +25,12 @@ class HeartRateApp extends StatefulWidget {
 }
 
 class _HeartRateAppState extends State<HeartRateApp> {
+  static const _overlayAnimationScaleKey = 'overlay.animationScale';
+  static const _overlayTextScaleKey = 'overlay.textScale';
+  static const _overlayAnimationSpeedKey = 'overlay.animationSpeed';
+
   late final HeartRateController _controller;
+  GameOverlaySettings _overlaySettings = GameOverlaySettings.defaults;
   _DashboardWindowState? _dashboardWindowState;
   _OverlayResizeSession? _overlayResizeSession;
   Rect? _pendingOverlayBounds;
@@ -40,6 +47,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
     super.initState();
     _controller = HeartRateController();
     unawaited(_controller.initialize());
+    unawaited(_loadOverlaySettings());
     if (widget.autoStartDemo) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_controller.toggleDemo());
@@ -70,10 +78,13 @@ class _HeartRateAppState extends State<HeartRateApp> {
               onResizeStart: _startResizingOverlay,
               onResize: _resizeOverlay,
               onScale: _scaleOverlay,
+              settings: _overlaySettings,
             )
           : MonitorPage(
               controller: _controller,
               onEnterGameOverlay: _enterGameOverlay,
+              overlaySettings: _overlaySettings,
+              onOverlaySettingsChanged: _updateOverlaySettings,
             ),
     );
   }
@@ -327,6 +338,52 @@ class _HeartRateAppState extends State<HeartRateApp> {
       debugPrint('Unable to scale overlay: $error');
     } finally {
       _isScalingOverlay = false;
+    }
+  }
+
+  Future<void> _loadOverlaySettings() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final settings = GameOverlaySettings(
+        animationScale:
+            preferences.getDouble(_overlayAnimationScaleKey) ??
+            GameOverlaySettings.defaults.animationScale,
+        textScale:
+            preferences.getDouble(_overlayTextScaleKey) ??
+            GameOverlaySettings.defaults.textScale,
+        animationSpeed:
+            preferences.getDouble(_overlayAnimationSpeedKey) ??
+            GameOverlaySettings.defaults.animationSpeed,
+      );
+      if (mounted) {
+        setState(() => _overlaySettings = settings);
+      }
+    } on Object catch (error) {
+      debugPrint('Unable to load overlay settings: $error');
+    }
+  }
+
+  void _updateOverlaySettings(GameOverlaySettings settings) {
+    setState(() => _overlaySettings = settings);
+    unawaited(_saveOverlaySettings(settings));
+  }
+
+  Future<void> _saveOverlaySettings(GameOverlaySettings settings) async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      await Future.wait([
+        preferences.setDouble(
+          _overlayAnimationScaleKey,
+          settings.animationScale,
+        ),
+        preferences.setDouble(_overlayTextScaleKey, settings.textScale),
+        preferences.setDouble(
+          _overlayAnimationSpeedKey,
+          settings.animationSpeed,
+        ),
+      ]);
+    } on Object catch (error) {
+      debugPrint('Unable to save overlay settings: $error');
     }
   }
 }

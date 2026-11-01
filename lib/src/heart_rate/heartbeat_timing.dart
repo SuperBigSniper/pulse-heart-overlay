@@ -1,8 +1,9 @@
 import 'dart:math' as math;
 
-Duration heartbeatPeriodFor(int? beatsPerMinute) {
+Duration heartbeatPeriodFor(int? beatsPerMinute, {double speedScale = 1}) {
   final safeBpm = (beatsPerMinute ?? 72).clamp(30, 220).toDouble();
-  return Duration(milliseconds: (60000 / safeBpm).round());
+  final safeSpeedScale = speedScale.clamp(0.4, 2.0).toDouble();
+  return Duration(milliseconds: (60000 / safeBpm * safeSpeedScale).round());
 }
 
 double smoothHeartRate(double? previous, int next) {
@@ -14,9 +15,7 @@ double smoothHeartRate(double? previous, int next) {
 
 double heartbeatImpulse(double progress) {
   final t = progress.clamp(0.0, 1.0);
-  final firstBeat = _gaussian(t, center: 0.08, width: 0.032);
-  final secondBeat = _gaussian(t, center: 0.255, width: 0.052) * 0.58;
-  return (firstBeat + secondBeat).clamp(0.0, 1.0);
+  return _gaussian(t, center: 0.08, width: 0.032).clamp(0.0, 1.0);
 }
 
 double _gaussian(
