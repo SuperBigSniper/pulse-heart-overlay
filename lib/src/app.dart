@@ -25,8 +25,13 @@ class HeartRateApp extends StatefulWidget {
 class _HeartRateAppState extends State<HeartRateApp> {
   late final HeartRateController _controller;
   _DashboardWindowState? _dashboardWindowState;
+  _OverlayResizeSession? _overlayResizeSession;
+  Rect? _pendingOverlayBounds;
+  Offset _pendingOverlayResizeDelta = Offset.zero;
   bool _isGameOverlay = false;
   bool _isChangingWindowMode = false;
+  bool _isWritingOverlayBounds = false;
+  int _overlayResizeGeneration = 0;
 
   @override
   void initState() {
@@ -60,6 +65,8 @@ class _HeartRateAppState extends State<HeartRateApp> {
               controller: _controller,
               onRestore: _restoreDashboard,
               onStartDragging: _startDraggingOverlay,
+              onResizeStart: _startResizingOverlay,
+              onResize: _resizeOverlay,
             )
           : MonitorPage(
               controller: _controller,
@@ -87,13 +94,14 @@ class _HeartRateAppState extends State<HeartRateApp> {
       }
 
       const overlaySize = GameOverlayPage.windowSize;
-      await windowManager.setMinimumSize(overlaySize);
-      await windowManager.setMaximumSize(overlaySize);
+      await windowManager.setMinimumSize(GameOverlayPage.minimumWindowSize);
+      await windowManager.setMaximumSize(GameOverlayPage.maximumWindowSize);
       await windowManager.setResizable(false);
       await windowManager.setTitleBarStyle(
         TitleBarStyle.hidden,
         windowButtonVisibility: false,
       );
+      await windowManager.setBackgroundColor(Colors.transparent);
       await windowManager.setAlwaysOnTop(true);
       await windowManager.setSkipTaskbar(true);
       if (Platform.isMacOS) {
@@ -109,6 +117,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
       await windowManager.setPosition(
         position.translate(-18, Platform.isMacOS ? 18 : 12),
       );
+      await windowManager.show(inactive: true);
     } on Object catch (error) {
       debugPrint('Unable to enter game overlay: $error');
       if (mounted) {
@@ -128,6 +137,9 @@ class _HeartRateAppState extends State<HeartRateApp> {
 
     try {
       final dashboardState = _dashboardWindowState;
+      _overlayResizeSession = null;
+      _pendingOverlayBounds = null;
+      _overlayResizeGeneration++;
       await windowManager.setAlwaysOnTop(
         dashboardState?.isAlwaysOnTop ?? false,
       );
@@ -143,6 +155,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
         TitleBarStyle.normal,
         windowButtonVisibility: true,
       );
+      await windowManager.setBackgroundColor(AppColors.paper);
 
       final bounds = dashboardState?.bounds;
       if (bounds != null) {
@@ -183,6 +196,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
         TitleBarStyle.normal,
         windowButtonVisibility: true,
       );
+      await windowManager.setBackgroundColor(AppColors.paper);
       await windowManager.setAlwaysOnTop(dashboardState.isAlwaysOnTop);
       await windowManager.setSkipTaskbar(dashboardState.isSkipTaskbar);
       if (Platform.isMacOS) {
@@ -208,6 +222,74 @@ class _HeartRateAppState extends State<HeartRateApp> {
   void _startDraggingOverlay() {
     unawaited(windowManager.startDragging());
   }
+
+  void _startResizingOverlay(OverlayResizeCorner corner) {
+    if (!_isGameOverlay || _isChangingWindowMode) {
+      return;
+    }
+    final generation = ++_overlayResizeGeneration;
+    _pendingOverlayResizeDelta = Offset.zero;
+    unawaited(_captureOverlayResizeStart(corner, generation));
+  }
+
+  Future<void> _captureOverlayResizeStart(
+    OverlayResizeCorner corner,
+    int generation,
+  ) async {
+    try {
+      final bounds = await windowManager.getBounds();
+      if (!_isGameOverlay || generation != _overlayResizeGeneration) {
+        return;
+      }
+      _overlayResizeSession = _OverlayResizeSession(
+        corner: corner,
+        startBounds: bounds,
+      );
+      if (_pendingOverlayResizeDelta != Offset.zero) {
+        _resizeOverlay(corner, _pendingOverlayResizeDelta);
+      }
+    } on Object catch (error) {
+      debugPrint('Unable to begin overlay resize: $error');
+    }
+  }
+
+  void _resizeOverlay(OverlayResizeCorner corner, Offset totalDelta) {
+    final session = _overlayResizeSession;
+    if (!_isGameOverlay || session == null || session.corner != corner) {
+      _pendingOverlayResizeDelta = totalDelta;
+      return;
+    }
+
+    _pendingOverlayBounds = resizedOverlayBounds(
+      startBounds: session.startBounds,
+      corner: corner,
+      totalDelta: totalDelta,
+    );
+    if (!_isWritingOverlayBounds) {
+      unawaited(_flushOverlayBounds());
+    }
+  }
+
+  Future<void> _flushOverlayBounds() async {
+    _isWritingOverlayBounds = true;
+    try {
+      while (true) {
+        final bounds = _pendingOverlayBounds;
+        if (bounds == null) {
+          break;
+        }
+        _pendingOverlayBounds = null;
+        await windowManager.setBounds(bounds);
+      }
+    } on Object catch (error) {
+      debugPrint('Unable to resize overlay: $error');
+    } finally {
+      _isWritingOverlayBounds = false;
+      if (_pendingOverlayBounds != null) {
+        unawaited(_flushOverlayBounds());
+      }
+    }
+  }
 }
 
 class _DashboardWindowState {
@@ -226,4 +308,14 @@ class _DashboardWindowState {
   final bool isSkipTaskbar;
   final bool isMaximized;
   final bool isFullScreen;
+}
+
+class _OverlayResizeSession {
+  const _OverlayResizeSession({
+    required this.corner,
+    required this.startBounds,
+  });
+
+  final OverlayResizeCorner corner;
+  final Rect startBounds;
 }
