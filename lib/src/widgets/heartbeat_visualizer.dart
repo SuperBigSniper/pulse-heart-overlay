@@ -12,12 +12,16 @@ class HeartbeatVisualizer extends StatefulWidget {
     required this.active,
     required this.size,
     this.demo = false,
+    this.showGuides = true,
+    this.showShadow = true,
   });
 
   final int? beatsPerMinute;
   final bool active;
   final double size;
   final bool demo;
+  final bool showGuides;
+  final bool showShadow;
 
   @override
   State<HeartbeatVisualizer> createState() => _HeartbeatVisualizerState();
@@ -76,6 +80,8 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
                   progress: _controller.value,
                   active: widget.active,
                   demo: widget.demo,
+                  showGuides: widget.showGuides,
+                  showShadow: widget.showShadow,
                 ),
               );
             },
@@ -91,11 +97,15 @@ class _HeartbeatPainter extends CustomPainter {
     required this.progress,
     required this.active,
     required this.demo,
+    required this.showGuides,
+    required this.showShadow,
   });
 
   final double progress;
   final bool active;
   final bool demo;
+  final bool showGuides;
+  final bool showShadow;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -106,7 +116,9 @@ class _HeartbeatPainter extends CustomPainter {
         : (math.sin(progress * math.pi * 2) + 1) / 2 * 0.12;
     final accent = demo ? AppColors.amber : AppColors.coral;
 
-    _paintGuides(canvas, center, radius, impulse, accent);
+    if (showGuides) {
+      _paintGuides(canvas, center, radius, impulse, accent);
+    }
 
     final scale = active ? 1.0 + impulse * 0.085 : 1.0;
     final heartPath = _buildHeartPath(center, radius * 0.46);
@@ -115,12 +127,14 @@ class _HeartbeatPainter extends CustomPainter {
     canvas.translate(center.dx, center.dy);
     canvas.scale(scale);
     canvas.translate(-center.dx, -center.dy);
-    canvas.drawShadow(
-      heartPath,
-      accent.withValues(alpha: active ? 0.40 : 0.16),
-      active ? 20 : 10,
-      true,
-    );
+    if (showShadow) {
+      canvas.drawShadow(
+        heartPath,
+        accent.withValues(alpha: active ? 0.40 : 0.16),
+        active ? 20 : 10,
+        true,
+      );
+    }
     canvas.drawPath(heartPath, Paint()..color = accent);
     _paintHeartHighlight(canvas, center, radius, accent);
     canvas.restore();
@@ -246,7 +260,9 @@ class _HeartbeatPainter extends CustomPainter {
   bool shouldRepaint(covariant _HeartbeatPainter oldDelegate) {
     return oldDelegate.progress != progress ||
         oldDelegate.active != active ||
-        oldDelegate.demo != demo;
+        oldDelegate.demo != demo ||
+        oldDelegate.showGuides != showGuides ||
+        oldDelegate.showShadow != showShadow;
   }
 }
 

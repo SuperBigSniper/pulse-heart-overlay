@@ -22,6 +22,7 @@ void main() {
           onStartDragging: () {},
           onResizeStart: (_) {},
           onResize: (_, _) {},
+          onScale: (_) {},
         ),
       ),
     );
@@ -30,6 +31,11 @@ void main() {
     expect(find.text('84'), findsOneWidget);
     expect(find.text('BPM'), findsOneWidget);
     expect(find.byType(HeartbeatVisualizer), findsOneWidget);
+    final visualizer = tester.widget<HeartbeatVisualizer>(
+      find.byType(HeartbeatVisualizer),
+    );
+    expect(visualizer.showGuides, isFalse);
+    expect(visualizer.showShadow, isFalse);
     expect(find.byType(Icon), findsNothing);
     expect(find.text('实时心率'), findsNothing);
     expect(

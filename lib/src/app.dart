@@ -31,6 +31,8 @@ class _HeartRateAppState extends State<HeartRateApp> {
   bool _isGameOverlay = false;
   bool _isChangingWindowMode = false;
   bool _isWritingOverlayBounds = false;
+  bool _isScalingOverlay = false;
+  double _pendingOverlayScale = 0;
   int _overlayResizeGeneration = 0;
 
   @override
@@ -67,6 +69,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
               onStartDragging: _startDraggingOverlay,
               onResizeStart: _startResizingOverlay,
               onResize: _resizeOverlay,
+              onScale: _scaleOverlay,
             )
           : MonitorPage(
               controller: _controller,
@@ -96,7 +99,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
       const overlaySize = GameOverlayPage.windowSize;
       await windowManager.setMinimumSize(GameOverlayPage.minimumWindowSize);
       await windowManager.setMaximumSize(GameOverlayPage.maximumWindowSize);
-      await windowManager.setResizable(false);
+      await windowManager.setResizable(true);
       await windowManager.setTitleBarStyle(
         TitleBarStyle.hidden,
         windowButtonVisibility: false,
@@ -139,6 +142,7 @@ class _HeartRateAppState extends State<HeartRateApp> {
       final dashboardState = _dashboardWindowState;
       _overlayResizeSession = null;
       _pendingOverlayBounds = null;
+      _pendingOverlayScale = 0;
       _overlayResizeGeneration++;
       await windowManager.setAlwaysOnTop(
         dashboardState?.isAlwaysOnTop ?? false,
@@ -288,6 +292,41 @@ class _HeartRateAppState extends State<HeartRateApp> {
       if (_pendingOverlayBounds != null) {
         unawaited(_flushOverlayBounds());
       }
+    }
+  }
+
+  void _scaleOverlay(double amount) {
+    if (!_isGameOverlay || _isChangingWindowMode) {
+      return;
+    }
+    _pendingOverlayScale += amount;
+    if (!_isScalingOverlay) {
+      unawaited(_flushOverlayScale());
+    }
+  }
+
+  Future<void> _flushOverlayScale() async {
+    _isScalingOverlay = true;
+    try {
+      while (_pendingOverlayScale.abs() >= 0.1) {
+        final amount = _pendingOverlayScale;
+        _pendingOverlayScale = 0;
+        final bounds = await windowManager.getBounds();
+        if (!_isGameOverlay || _isChangingWindowMode) {
+          return;
+        }
+        final size = (bounds.shortestSide + amount).clamp(
+          GameOverlayPage.minimumWindowSize.width,
+          GameOverlayPage.maximumWindowSize.width,
+        );
+        await windowManager.setBounds(
+          Rect.fromCenter(center: bounds.center, width: size, height: size),
+        );
+      }
+    } on Object catch (error) {
+      debugPrint('Unable to scale overlay: $error');
+    } finally {
+      _isScalingOverlay = false;
     }
   }
 }

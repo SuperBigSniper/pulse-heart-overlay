@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -17,6 +18,7 @@ class GameOverlayPage extends StatelessWidget {
     required this.onStartDragging,
     required this.onResizeStart,
     required this.onResize,
+    required this.onScale,
   });
 
   static const windowSize = Size(220, 220);
@@ -28,6 +30,7 @@ class GameOverlayPage extends StatelessWidget {
   final VoidCallback onStartDragging;
   final ValueChanged<OverlayResizeCorner> onResizeStart;
   final void Function(OverlayResizeCorner corner, Offset delta) onResize;
+  final ValueChanged<double> onScale;
 
   @override
   Widget build(BuildContext context) {
@@ -50,39 +53,46 @@ class GameOverlayPage extends StatelessWidget {
               child: Semantics(
                 label: bpm == null ? '等待心率数据' : '当前心率 $bpm 次每分钟',
                 hint: '双击恢复完整界面，拖动四角缩放',
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Positioned.fill(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.translucent,
-                        onDoubleTap: onRestore,
-                        onPanStart: (_) => onStartDragging(),
-                        child: MouseRegion(
-                          cursor: SystemMouseCursors.move,
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final size = math.min(
-                                constraints.maxWidth,
-                                constraints.maxHeight,
-                              );
-                              return _OverlayHeartRateView(
-                                controller: controller,
-                                active: active,
-                                size: size,
-                              );
-                            },
+                child: Listener(
+                  onPointerSignal: (event) {
+                    if (event is PointerScrollEvent) {
+                      onScale(-event.scrollDelta.dy * 0.25);
+                    }
+                  },
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Positioned.fill(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onDoubleTap: onRestore,
+                          onPanStart: (_) => onStartDragging(),
+                          child: MouseRegion(
+                            cursor: SystemMouseCursors.move,
+                            child: LayoutBuilder(
+                              builder: (context, constraints) {
+                                final size = math.min(
+                                  constraints.maxWidth,
+                                  constraints.maxHeight,
+                                );
+                                return _OverlayHeartRateView(
+                                  controller: controller,
+                                  active: active,
+                                  size: size,
+                                );
+                              },
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    for (final corner in OverlayResizeCorner.values)
-                      _OverlayResizeHandle(
-                        corner: corner,
-                        onStart: () => onResizeStart(corner),
-                        onUpdate: (delta) => onResize(corner, delta),
-                      ),
-                  ],
+                      for (final corner in OverlayResizeCorner.values)
+                        _OverlayResizeHandle(
+                          corner: corner,
+                          onStart: () => onResizeStart(corner),
+                          onUpdate: (delta) => onResize(corner, delta),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -203,6 +213,8 @@ class _OverlayHeartRateView extends StatelessWidget {
             active: active,
             demo: controller.isDemo,
             size: heartSize,
+            showGuides: false,
+            showShadow: false,
           ),
         ),
         Align(
