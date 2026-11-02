@@ -124,10 +124,14 @@ class _HeartRateAppState extends State<HeartRateApp> {
       await windowManager.setMinimumSize(GameOverlayPage.minimumWindowSize);
       await windowManager.setMaximumSize(maximumSize);
       await windowManager.setResizable(true);
-      await windowManager.setTitleBarStyle(
-        TitleBarStyle.hidden,
-        windowButtonVisibility: false,
-      );
+      if (Platform.isWindows) {
+        await windowManager.setAsFrameless();
+      } else {
+        await windowManager.setTitleBarStyle(
+          TitleBarStyle.hidden,
+          windowButtonVisibility: false,
+        );
+      }
       await windowManager.setBackgroundColor(Colors.transparent);
       await windowManager.setAlwaysOnTop(true);
       await windowManager.setSkipTaskbar(true);

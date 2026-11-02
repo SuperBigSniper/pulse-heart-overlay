@@ -63,6 +63,22 @@ flutter pub get
 flutter run -d windows
 ```
 
+Windows 版连接 BLE 设备时使用带 `bluetooth` 和 `radios` 能力声明的 MSIX
+包。直接运行 ZIP 中的程序不会获得 Windows 应用包身份，可能无法触发蓝牙
+授权：
+
+```powershell
+flutter build windows --release
+dart run msix:create --install-certificate false
+```
+
+首次安装前需要信任 Release 中附带的 `Pulse.cer`，然后安装 `.msix`
+文件。也可以在 PowerShell 中执行：
+
+```powershell
+Import-Certificate -FilePath .\Pulse.cer -CertStoreLocation Cert:\CurrentUser\TrustedPeople
+```
+
 启动时直接进入演示模式：
 
 ```bash
@@ -92,7 +108,8 @@ flutter build windows --release
 构建产物位置：
 
 - macOS: `build/macos/Build/Products/Release/Pulse.app`
-- Windows: `build/windows/x64/runner/Release/heartbeat_monitor.exe`
+- Windows MSIX: `build/windows/x64/runner/Release/*.msix`
+- Windows 便携版: `build/windows/x64/runner/Release/heartbeat_monitor.exe`
 
 `.github/workflows/build-desktop.yml` 可在 Windows 和 macOS 的 GitHub
 Actions runner 上分别构建发布版。Windows 发布版不能在 macOS 主机上原生
