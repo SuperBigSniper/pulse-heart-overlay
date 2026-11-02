@@ -63,21 +63,10 @@ flutter pub get
 flutter run -d windows
 ```
 
-Windows 版连接 BLE 设备时使用带 `bluetooth` 和 `radios` 能力声明的 MSIX
-包。直接运行 ZIP 中的程序不会获得 Windows 应用包身份，可能无法触发蓝牙
-授权：
-
-```powershell
-flutter build windows --release
-dart run msix:create --install-certificate false
-```
-
-首次安装前需要信任 Release 中附带的 `Pulse.cer`，然后安装 `.msix`
-文件。也可以在 PowerShell 中执行：
-
-```powershell
-Import-Certificate -FilePath .\Pulse.cer -CertStoreLocation Cert:\CurrentUser\TrustedPeople
-```
+Windows 发布为便携版 ZIP，解压后直接运行 `heartbeat_monitor.exe`，无需
+安装。便携版没有独立的蓝牙授权弹窗；若连接时出现“访问被拒绝”，请先在
+系统「设置 → 蓝牙和其他设备」中断开或忽略该手环，并关闭其他正在占用它的
+应用后重试。
 
 启动时直接进入演示模式：
 
@@ -108,8 +97,7 @@ flutter build windows --release
 构建产物位置：
 
 - macOS: `build/macos/Build/Products/Release/Pulse.app`
-- Windows MSIX: `build/windows/x64/runner/Release/*.msix`
-- Windows 便携版: `build/windows/x64/runner/Release/heartbeat_monitor.exe`
+- Windows: `build/windows/x64/runner/Release/heartbeat_monitor.exe`
 
 `.github/workflows/build-desktop.yml` 可在 Windows 和 macOS 的 GitHub
 Actions runner 上分别构建发布版。Windows 发布版不能在 macOS 主机上原生

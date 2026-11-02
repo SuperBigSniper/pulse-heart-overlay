@@ -260,50 +260,7 @@ class HeartRateController extends ChangeNotifier {
 
     try {
       await UniversalBle.requestPermissions();
-      await _connectTransport(device);
-      final services = await device.discoverServices(
-        timeout: const Duration(seconds: 20),
-      );
-      final heartRateService = services.where(
-        (service) =>
-            BleUuidParser.compareStrings(service.uuid, heartRateServiceUuid),
-      );
-      if (heartRateService.isEmpty) {
-        throw const HeartRateSessionException(
-          '该设备没有提供标准心率服务（0x180D），可能使用厂商私有协议。',
-        );
-      }
-
-      final characteristic = heartRateService.first.getCharacteristic(
-        heartRateMeasurementUuid,
-      );
-      final supportsNotify = characteristic.properties.contains(
-        CharacteristicProperty.notify,
-      );
-      final supportsIndicate = characteristic.properties.contains(
-        CharacteristicProperty.indicate,
-      );
-      if (!supportsNotify && !supportsIndicate) {
-        throw const HeartRateSessionException('心率特征不支持实时通知。');
-      }
-
-      var subscribed = false;
-      if (supportsNotify) {
-        try {
-          await characteristic.notifications.subscribe();
-          subscribed = true;
-        } on Object {
-          // Some devices advertise both modes but only accept indications.
-        }
-      }
-      if (!subscribed && supportsIndicate) {
-        await characteristic.indications.subscribe();
-        subscribed = true;
-      }
-      if (!subscribed) {
-        throw const HeartRateSessionException('无法订阅心率实时通知。');
-      }
-
+      final characteristic = await _openHeartRateSession(device);
       _heartRateCharacteristic = characteristic;
       _valueSubscription = characteristic.onValueReceived.listen(
         _handleHeartRateValue,
@@ -332,25 +289,71 @@ class HeartRateController extends ChangeNotifier {
     }
   }
 
-  Future<void> _connectTransport(BleDevice device) async {
+  Future<BleCharacteristic> _openHeartRateSession(BleDevice device) async {
     try {
-      await UniversalBle.connect(
-        device.deviceId,
-        timeout: const Duration(seconds: 20),
-      );
+      return await _connectAndSubscribe(device);
     } on Object catch (error) {
       if (!isBluetoothAccessDenied(error)) {
         rethrow;
       }
 
+      // Windows often keeps a GATT session open after a failed discovery.
+      // Fully disconnect, wait, then retry once before surfacing AccessDenied.
       await _disconnectTransport(showStatus: false);
       _pendingDevice = device;
       await Future<void>.delayed(const Duration(milliseconds: 900));
-      await UniversalBle.connect(
-        device.deviceId,
-        timeout: const Duration(seconds: 20),
+      return _connectAndSubscribe(device);
+    }
+  }
+
+  Future<BleCharacteristic> _connectAndSubscribe(BleDevice device) async {
+    await UniversalBle.connect(
+      device.deviceId,
+      timeout: const Duration(seconds: 20),
+    );
+    final services = await device.discoverServices(
+      timeout: const Duration(seconds: 20),
+    );
+    final heartRateService = services.where(
+      (service) =>
+          BleUuidParser.compareStrings(service.uuid, heartRateServiceUuid),
+    );
+    if (heartRateService.isEmpty) {
+      throw const HeartRateSessionException(
+        '该设备没有提供标准心率服务（0x180D），可能使用厂商私有协议。',
       );
     }
+
+    final characteristic = heartRateService.first.getCharacteristic(
+      heartRateMeasurementUuid,
+    );
+    final supportsNotify = characteristic.properties.contains(
+      CharacteristicProperty.notify,
+    );
+    final supportsIndicate = characteristic.properties.contains(
+      CharacteristicProperty.indicate,
+    );
+    if (!supportsNotify && !supportsIndicate) {
+      throw const HeartRateSessionException('心率特征不支持实时通知。');
+    }
+
+    var subscribed = false;
+    if (supportsNotify) {
+      try {
+        await characteristic.notifications.subscribe();
+        subscribed = true;
+      } on Object {
+        // Some devices advertise both modes but only accept indications.
+      }
+    }
+    if (!subscribed && supportsIndicate) {
+      await characteristic.indications.subscribe();
+      subscribed = true;
+    }
+    if (!subscribed) {
+      throw const HeartRateSessionException('无法订阅心率实时通知。');
+    }
+    return characteristic;
   }
 
   Future<void> disconnect() async {
@@ -585,8 +588,7 @@ class HeartRateController extends ChangeNotifier {
       return error.message;
     }
     if (isBluetoothAccessDenied(error)) {
-      return 'Windows 拒绝访问手环。请关闭其他正在使用该手环的应用，'
-          '在系统蓝牙设置中断开手环后重试。';
+      return bluetoothAccessDeniedGuidance();
     }
     final message = _readableError(error);
     if (message.toLowerCase().contains('timeout')) {
@@ -651,4 +653,9 @@ bool isBluetoothAccessDenied(Object error) {
       message.contains('access denied') ||
       message.contains('access is denied') ||
       message.contains('拒绝访问');
+}
+
+String bluetoothAccessDeniedGuidance() {
+  return 'Windows 拒绝访问手环。请先在系统「设置 → 蓝牙和其他设备」中断开或'
+      '忽略该手环，并关闭其他正在使用它的应用后重试。便携版不会弹出独立授权窗口。';
 }
