@@ -302,7 +302,34 @@ class HeartRateController extends ChangeNotifier {
       await _disconnectTransport(showStatus: false);
       _pendingDevice = device;
       await Future<void>.delayed(const Duration(milliseconds: 900));
-      return _connectAndSubscribe(device);
+      try {
+        return await _connectAndSubscribe(device);
+      } on Object catch (retryError) {
+        if (defaultTargetPlatform != TargetPlatform.windows ||
+            !isBluetoothAccessDenied(retryError)) {
+          rethrow;
+        }
+
+        await _disconnectTransport(showStatus: false);
+        _pendingDevice = device;
+        await _pairWindowsDevice(device);
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        return _connectAndSubscribe(device);
+      }
+    }
+  }
+
+  Future<void> _pairWindowsDevice(BleDevice device) async {
+    try {
+      final isPaired = await device.isPaired(
+        timeout: const Duration(seconds: 12),
+      );
+      if (isPaired != true) {
+        await device.pair(timeout: const Duration(seconds: 30));
+      }
+    } on Object {
+      // Pairing is best effort. The final connection error includes guidance
+      // for devices that Windows cannot bind automatically.
     }
   }
 
@@ -656,6 +683,6 @@ bool isBluetoothAccessDenied(Object error) {
 }
 
 String bluetoothAccessDeniedGuidance() {
-  return 'Windows 拒绝访问手环。请先在系统「设置 → 蓝牙和其他设备」中断开或'
-      '忽略该手环，并关闭其他正在使用它的应用后重试。便携版不会弹出独立授权窗口。';
+  return 'Windows 拒绝访问手环。请在系统「设置 → 蓝牙和其他设备」中删除或断开该手环，'
+      '关闭手机和其他电脑上的连接应用，再重新连接。';
 }

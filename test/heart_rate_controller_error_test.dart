@@ -38,13 +38,11 @@ void main() {
   });
 
   group('bluetoothAccessDeniedGuidance', () {
-    test('guides users for unpackaged Windows without MSIX', () {
+    test('guides Windows users through device cleanup', () {
       final guidance = bluetoothAccessDeniedGuidance();
       expect(guidance, contains('设置'));
       expect(guidance, contains('蓝牙'));
-      expect(guidance, isNot(contains('MSIX')));
-      expect(guidance, isNot(contains('msix')));
-      expect(guidance, contains('不会弹出'));
+      expect(guidance, contains('手机'));
     });
   });
 }
