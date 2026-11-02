@@ -258,7 +258,7 @@ class _ScanSummary extends StatelessWidget {
   Widget build(BuildContext context) {
     final count = controller.scanDevices.length;
     final text = heartRateOnly
-        ? '发现 $count 台广播标准心率服务的设备'
+        ? '发现 $count 台心率设备（含系统已连接设备）'
         : '发现 $count 台可连接的蓝牙设备';
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 14),

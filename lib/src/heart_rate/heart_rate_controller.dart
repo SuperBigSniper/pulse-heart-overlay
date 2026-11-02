@@ -194,7 +194,21 @@ class HeartRateController extends ChangeNotifier {
         skipDuplicates: true,
       );
 
-      if (defaultTargetPlatform != TargetPlatform.windows) {
+      if (defaultTargetPlatform == TargetPlatform.windows) {
+        try {
+          // Windows hides connected peripherals from normal advertisements.
+          // Enumerate without a service filter so this does not touch GATT.
+          final systemDevices = await UniversalBle.getSystemDevices(
+            withServices: const [],
+            timeout: const Duration(seconds: 8),
+          );
+          for (final device in systemDevices) {
+            _addScanResult(device);
+          }
+        } on Object {
+          // A live BLE scan can still find devices that advertise.
+        }
+      } else {
         try {
           final systemDevices = await UniversalBle.getSystemDevices(
             withServices: heartRateOnly
@@ -448,10 +462,12 @@ class HeartRateController extends ChangeNotifier {
 
   void _addScanResult(BleDevice device) {
     final existing = _scanResults[device.deviceId];
-    if (existing == null ||
-        (device.rssi ?? -127) > (existing.rssi ?? -127) ||
-        (device.name?.isNotEmpty ?? false)) {
+    if (existing == null) {
       _scanResults[device.deviceId] = device;
+      _notify();
+      return;
+    }
+    if (mergeBleDevice(existing, device)) {
       _notify();
     }
   }
@@ -501,10 +517,38 @@ class HeartRateController extends ChangeNotifier {
   }
 
   void _handleConnectionChange(bool connected) {
-    if (connected || _status != MonitorStatus.connected || _manualDisconnect) {
+    final device = _connectedDevice;
+    if (connected ||
+        device == null ||
+        _status != MonitorStatus.connected ||
+        _manualDisconnect) {
       return;
     }
-    unawaited(_handleUnexpectedDisconnect());
+    unawaited(_verifyUnexpectedDisconnect(device));
+  }
+
+  Future<void> _verifyUnexpectedDisconnect(BleDevice device) async {
+    // Windows can emit a transient disconnect callback while renegotiating
+    // GATT. Confirm against the current OS connection state before surfacing it.
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (_status != MonitorStatus.connected ||
+        _manualDisconnect ||
+        _connectedDevice?.deviceId != device.deviceId) {
+      return;
+    }
+
+    try {
+      final state = await UniversalBle.getConnectionState(
+        device.deviceId,
+        timeout: const Duration(seconds: 5),
+      );
+      if (state != BleConnectionState.disconnected) {
+        return;
+      }
+    } on Object {
+      // If the state cannot be queried, trust the disconnect event.
+    }
+    await _handleUnexpectedDisconnect();
   }
 
   Future<void> _handleUnexpectedDisconnect() async {
@@ -666,6 +710,37 @@ bool advertisesHeartRateService(BleDevice device) {
       HeartRateController.heartRateServiceUuid,
     ),
   );
+}
+
+bool mergeBleDevice(BleDevice current, BleDevice incoming) {
+  var changed = false;
+
+  if ((current.name?.isEmpty ?? true) && (incoming.name?.isNotEmpty ?? false)) {
+    current.name = incoming.name;
+    current.rawName = incoming.rawName;
+    changed = true;
+  }
+  if (incoming.rssi != null &&
+      (current.rssi == null || incoming.rssi! > current.rssi!)) {
+    current.rssi = incoming.rssi;
+    changed = true;
+  }
+  if (incoming.services.any((service) => !current.services.contains(service))) {
+    current.services = {
+      ...current.services,
+      ...incoming.services,
+    }.toList(growable: false);
+    changed = true;
+  }
+  if (incoming.paired != null && current.paired != incoming.paired) {
+    current.paired = incoming.paired;
+    changed = true;
+  }
+  if (incoming.isSystemDevice == true && current.isSystemDevice != true) {
+    current.isSystemDevice = true;
+    changed = true;
+  }
+  return changed;
 }
 
 bool isBluetoothAccessDenied(Object error) {
