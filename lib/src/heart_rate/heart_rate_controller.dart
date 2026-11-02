@@ -194,15 +194,19 @@ class HeartRateController extends ChangeNotifier {
         skipDuplicates: true,
       );
 
-      try {
-        final systemDevices = await UniversalBle.getSystemDevices(
-          withServices: heartRateOnly ? const [heartRateServiceUuid] : const [],
-        );
-        for (final device in systemDevices) {
-          _addScanResult(device);
+      if (defaultTargetPlatform != TargetPlatform.windows) {
+        try {
+          final systemDevices = await UniversalBle.getSystemDevices(
+            withServices: heartRateOnly
+                ? const [heartRateServiceUuid]
+                : const [],
+          );
+          for (final device in systemDevices) {
+            _addScanResult(device);
+          }
+        } on Object {
+          // System devices are an optional shortcut; a live scan still works.
         }
-      } on Object {
-        // System devices are an optional shortcut; a live scan still works.
       }
 
       _scanTimer?.cancel();
@@ -243,6 +247,9 @@ class HeartRateController extends ChangeNotifier {
     }
 
     await stopScan(notify: false);
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+    }
     await _disconnectTransport(showStatus: false);
     _clearMeasurement();
     _errorMessage = null;
