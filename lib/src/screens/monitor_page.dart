@@ -215,10 +215,9 @@ class _Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final connected = controller.connectedDevice != null;
-    final hasConnection =
-        connected ||
-        controller.status == MonitorStatus.connecting ||
+    final selected = controller.selectedDevice != null;
+    final active =
+        selected ||
         controller.status == MonitorStatus.error;
     final statusColor = _connectionColor(controller);
 
@@ -320,44 +319,40 @@ class _Sidebar extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 26),
-            if (controller.isBusy)
-              FilledButton(
-                onPressed: null,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const SizedBox.square(
-                      dimension: 15,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.8,
-                        color: AppColors.ink,
-                      ),
-                    ),
-                    const SizedBox(width: 9),
-                    Text(
-                      controller.status == MonitorStatus.disconnecting
-                          ? '正在断开'
-                          : '正在连接',
-                    ),
-                  ],
-                ),
+            if (controller.isDemo)
+              FilledButton.icon(
+                onPressed: () => unawaited(controller.toggleDemo()),
+                icon: const Icon(Icons.stop_circle_outlined, size: 18),
+                label: const Text('结束演示'),
               )
             else
               FilledButton.icon(
                 onPressed: () {
-                  if (hasConnection) {
+                  if (active) {
                     unawaited(controller.disconnect());
                   } else {
                     unawaited(showDeviceScanner(context, controller));
                   }
                 },
                 icon: Icon(
-                  hasConnection ? Icons.link_off : Icons.bluetooth_searching,
+                  active ? Icons.link_off : Icons.bluetooth_searching,
                   size: 18,
                 ),
-                label: Text(hasConnection ? '断开连接' : '连接手环'),
+                label: Text(active ? '停止接收' : '选择手环'),
               ),
-            if (!hasConnection) ...[
+            if (!controller.isDemo) ...[
+              if (selected) ...[
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: () => unawaited(showDeviceScanner(context, controller)),
+                  icon: const Icon(Icons.swap_horiz, size: 18),
+                  label: const Text('更换手环'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFD5DEDC),
+                    side: const BorderSide(color: Color(0xFF40535A)),
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
               OutlinedButton.icon(
                 onPressed: () => unawaited(controller.toggleDemo()),
@@ -379,7 +374,7 @@ class _Sidebar extends StatelessWidget {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: controller.hasReading && !controller.isBusy
+                    onPressed: controller.hasReading
                         ? onEnterGameOverlay
                         : null,
                     icon: const Icon(
@@ -481,10 +476,8 @@ class _Sidebar extends StatelessWidget {
       return AppColors.amber;
     }
     return switch (controller.status) {
-      MonitorStatus.connected =>
+      MonitorStatus.receiving =>
         controller.readingIsStale ? AppColors.amber : const Color(0xFF66B59B),
-      MonitorStatus.connecting ||
-      MonitorStatus.disconnecting => AppColors.amber,
       MonitorStatus.error => AppColors.coral,
       MonitorStatus.idle => const Color(0xFF6E8584),
     };
@@ -494,13 +487,13 @@ class _Sidebar extends StatelessWidget {
     if (controller.isDemo) {
       return '模拟心率，用于预览动画速度';
     }
-    final device = controller.connectedDevice;
+    final device = controller.selectedDevice;
     if (device != null) {
       final name = device.name?.trim();
       return name == null || name.isEmpty ? device.deviceId : name;
     }
     if (controller.status == MonitorStatus.error) {
-      return '连接已结束，可重新搜索设备';
+      return '接收中断，请重新选择设备';
     }
     return '尚未选择蓝牙心率设备';
   }
@@ -653,9 +646,9 @@ class _MonitorMain extends StatelessWidget {
     if (controller.isDemo) {
       return '使用模拟数据预览心跳动画';
     }
-    final device = controller.connectedDevice;
+    final device = controller.selectedDevice;
     if (device == null) {
-      return '连接手环后显示实时读数';
+      return '选择手环后显示实时读数';
     }
     final name = device.name?.trim();
     return name == null || name.isEmpty ? device.deviceId : name;
@@ -802,13 +795,11 @@ class _StatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (background, foreground) = switch (controller.status) {
-      MonitorStatus.connected when controller.readingIsStale => (
+      MonitorStatus.receiving when controller.readingIsStale => (
         AppColors.amberWash,
         AppColors.amber,
       ),
-      MonitorStatus.connected => (AppColors.mintWash, AppColors.mint),
-      MonitorStatus.connecting ||
-      MonitorStatus.disconnecting => (AppColors.amberWash, AppColors.amber),
+      MonitorStatus.receiving => (AppColors.mintWash, AppColors.mint),
       MonitorStatus.error => (AppColors.coralWash, AppColors.coralDark),
       MonitorStatus.idle => (AppColors.paperDeep, AppColors.inkMuted),
     };
@@ -994,9 +985,9 @@ class _DetailsPanel extends StatelessWidget {
   }
 
   String _sourceName(HeartRateController controller) {
-    final device = controller.connectedDevice;
+    final device = controller.selectedDevice;
     if (device == null) {
-      return '未连接';
+      return '未选择设备';
     }
     final name = device.name?.trim();
     return name == null || name.isEmpty ? device.deviceId : name;

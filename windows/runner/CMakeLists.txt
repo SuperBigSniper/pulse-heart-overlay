@@ -8,10 +8,15 @@ project(runner LANGUAGES CXX)
 # Any new source files that you add to the application should be added here.
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
+  "heart_rate_channel.cpp"
   "main.cpp"
   "utils.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
+  # The heart rate channel uses flutter::PluginRegistrarWindows /
+  # PluginRegistrarManager, whose implementations live in the plugin-side
+  # wrapper; the app wrapper does not link them.
+  "${FLUTTER_MANAGED_DIR}/ephemeral/cpp_client_wrapper/plugin_registrar.cc"
   "Runner.rc"
   "runner.exe.manifest"
 )
@@ -34,6 +39,9 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
+# C++/WinRT projection for the custom heart rate channel (0x180D/0x2A37).
+target_link_libraries(${BINARY_NAME} PRIVATE "windowsapp")
+target_compile_features(${BINARY_NAME} PRIVATE cxx_std_20)
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

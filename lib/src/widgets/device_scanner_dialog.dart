@@ -13,7 +13,6 @@ Future<void> showDeviceScanner(
   controller.clearError();
   return showDialog<void>(
     context: context,
-    barrierDismissible: controller.status != MonitorStatus.connecting,
     builder: (context) => DeviceScannerDialog(controller: controller),
   );
 }
@@ -29,7 +28,6 @@ class DeviceScannerDialog extends StatefulWidget {
 
 class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
   bool _heartRateOnly = true;
-  String? _connectingDeviceId;
 
   @override
   void initState() {
@@ -53,29 +51,20 @@ class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
     await _startScan();
   }
 
-  Future<void> _connect(BleDevice device) async {
-    if (_connectingDeviceId != null) {
-      return;
-    }
-    setState(() {
-      _connectingDeviceId = device.deviceId;
-    });
-    final connected = await widget.controller.connect(device);
-    if (!mounted) {
-      return;
-    }
-    if (connected) {
+  Future<void> _select(BleDevice device) async {
+    await widget.controller.selectDevice(device);
+    if (mounted) {
       Navigator.of(context).pop();
-      return;
     }
-    setState(() {
-      _connectingDeviceId = null;
-    });
   }
 
   @override
   void dispose() {
-    unawaited(widget.controller.stopScan(notify: false));
+    // A selected device needs its persistent scan; only stop when the user
+    // closed the dialog without choosing anything.
+    if (widget.controller.selectedDevice == null) {
+      unawaited(widget.controller.stopScan(notify: false));
+    }
     super.dispose();
   }
 
@@ -115,11 +104,9 @@ class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
                     ],
                     selected: {_heartRateOnly},
                     showSelectedIcon: false,
-                    onSelectionChanged: widget.controller.isBusy
-                        ? null
-                        : (selection) {
-                            unawaited(_changeFilter(selection.first));
-                          },
+                    onSelectionChanged: (selection) {
+                      unawaited(_changeFilter(selection.first));
+                    },
                   ),
                 ),
                 _ScanSummary(
@@ -136,8 +123,8 @@ class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
                   child: _DeviceList(
                     devices: widget.controller.scanDevices,
                     scanning: widget.controller.isScanning,
-                    connectingDeviceId: _connectingDeviceId,
-                    onConnect: _connect,
+                    lastDeviceId: widget.controller.lastDevice?.deviceId,
+                    onSelect: _select,
                   ),
                 ),
                 const Divider(height: 1),
@@ -167,7 +154,7 @@ class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
                       ),
                       const Spacer(),
                       Text(
-                        'BLE Heart Rate · 0x180D',
+                        'BLE Heart Rate Broadcast',
                         style: TextStyle(
                           color: AppColors.inkMuted.withValues(alpha: 0.72),
                           fontSize: 11,
@@ -220,7 +207,7 @@ class _DialogHeader extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('连接心率设备', style: Theme.of(context).textTheme.titleLarge),
+                Text('选择心率设备', style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 2),
                 Text(
                   scanning ? '正在搜索附近设备' : '搜索已暂停',
@@ -258,8 +245,8 @@ class _ScanSummary extends StatelessWidget {
   Widget build(BuildContext context) {
     final count = controller.scanDevices.length;
     final text = heartRateOnly
-        ? '发现 $count 台心率设备（含系统已连接设备）'
-        : '发现 $count 台可连接的蓝牙设备';
+        ? '发现 $count 台广播心率设备'
+        : '发现 $count 台蓝牙设备';
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 14),
       child: Row(
@@ -289,14 +276,14 @@ class _DeviceList extends StatelessWidget {
   const _DeviceList({
     required this.devices,
     required this.scanning,
-    required this.connectingDeviceId,
-    required this.onConnect,
+    required this.lastDeviceId,
+    required this.onSelect,
   });
 
   final List<BleDevice> devices;
   final bool scanning;
-  final String? connectingDeviceId;
-  final Future<void> Function(BleDevice device) onConnect;
+  final String? lastDeviceId;
+  final Future<void> Function(BleDevice device) onSelect;
 
   @override
   Widget build(BuildContext context) {
@@ -319,7 +306,10 @@ class _DeviceList extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                scanning ? '请确认手环已开启心率广播并靠近电脑。' : '可刷新搜索，或切换到所有蓝牙设备。',
+                scanning
+                    ? '请确认手环已开启「运动心率广播」并靠近电脑。'
+                    : '可刷新搜索或切换到所有蓝牙设备。小米手环需在'
+                        '「设置 → 锻炼 → 心率广播」开启广播后才会对外发送心率。',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: AppColors.inkMuted,
@@ -340,13 +330,12 @@ class _DeviceList extends StatelessWidget {
       itemBuilder: (context, index) {
         final device = devices[index];
         final supportsHeartRate = advertisesHeartRateService(device);
-        final connecting = connectingDeviceId == device.deviceId;
+        final isLastDevice = device.deviceId == lastDeviceId;
         return _DeviceRow(
           device: device,
           supportsHeartRate: supportsHeartRate,
-          connecting: connecting,
-          disabled: connectingDeviceId != null && !connecting,
-          onConnect: () => onConnect(device),
+          isLastDevice: isLastDevice,
+          onSelect: () => onSelect(device),
         );
       },
     );
@@ -357,16 +346,14 @@ class _DeviceRow extends StatelessWidget {
   const _DeviceRow({
     required this.device,
     required this.supportsHeartRate,
-    required this.connecting,
-    required this.disabled,
-    required this.onConnect,
+    required this.isLastDevice,
+    required this.onSelect,
   });
 
   final BleDevice device;
   final bool supportsHeartRate;
-  final bool connecting;
-  final bool disabled;
-  final VoidCallback onConnect;
+  final bool isLastDevice;
+  final Future<void> Function() onSelect;
 
   @override
   Widget build(BuildContext context) {
@@ -374,7 +361,7 @@ class _DeviceRow extends StatelessWidget {
     final displayName = name == null || name.isEmpty ? '未命名设备' : name;
 
     return InkWell(
-      onTap: disabled || connecting ? null : onConnect,
+      onTap: onSelect,
       borderRadius: BorderRadius.circular(6),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 12),
@@ -414,6 +401,10 @@ class _DeviceRow extends StatelessWidget {
                         const SizedBox(width: 8),
                         const _SmallBadge(label: '心率'),
                       ],
+                      if (isLastDevice) ...[
+                        const SizedBox(width: 8),
+                        const _SmallBadge(label: '上次使用'),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 3),
@@ -430,24 +421,15 @@ class _DeviceRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            if (connecting)
-              const SizedBox.square(
-                dimension: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: AppColors.coral,
-                ),
-              )
-            else
-              FilledButton.icon(
-                onPressed: disabled ? null : onConnect,
-                icon: const Icon(Icons.link, size: 16),
-                label: const Text('连接'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size(86, 38),
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                ),
+            FilledButton.icon(
+              onPressed: onSelect,
+              icon: const Icon(Icons.check_circle_outline, size: 16),
+              label: const Text('选择'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(86, 38),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
               ),
+            ),
           ],
         ),
       ),
@@ -456,9 +438,6 @@ class _DeviceRow extends StatelessWidget {
 
   String _deviceSubtitle(BleDevice device) {
     final parts = <String>[];
-    if (device.isSystemDevice ?? false) {
-      parts.add('系统已配对');
-    }
     if (device.rssi != null) {
       parts.add('${device.rssi} dBm');
     }

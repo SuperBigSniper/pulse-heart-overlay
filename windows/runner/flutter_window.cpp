@@ -27,6 +27,12 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
+  heart_rate_channel_ = HeartRateChannel::Create(
+      flutter::PluginRegistrarManager::GetInstance()
+          ->GetRegistrar<flutter::PluginRegistrarWindows>(
+              flutter_controller_->engine()->GetRegistrarForPlugin(
+                  "HeartRateChannel")));
+
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
   });
@@ -40,6 +46,8 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  // Tear down the BLE bridge before the engine registrar disappears.
+  heart_rate_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
