@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io' show Platform;
 import 'dart:math' as math;
 
@@ -6,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'heart_rate_history.dart';
 import 'heart_rate_measurement.dart';
 import 'heart_rate_subscription.dart';
 import 'windows_heart_rate_channel.dart';
@@ -36,6 +38,9 @@ class HeartRateSample {
 /// its native implementation can scope service discovery to the heart-rate
 /// service; macOS uses universal_ble's CoreBluetooth-backed implementation.
 class HeartRateController extends ChangeNotifier {
+  HeartRateController({HeartRateHistoryStore? historyStore})
+    : _historyStore = historyStore ?? HeartRateHistoryStore();
+
   static const heartRateServiceUuid = '180d';
   static const heartRateMeasurementUuid = '2a37';
   static const _lastDeviceIdKey = 'heartRate.lastDeviceId';
@@ -56,8 +61,34 @@ class HeartRateController extends ChangeNotifier {
   static const _gattRetryMinimum = Duration(seconds: 2);
   static const _gattRetryMaximum = Duration(seconds: 60);
 
+  /// Duty cycle applied to the broadcast scan while the band stays silent.
+  ///
+  /// The advertisement scan cannot use `skipDuplicates: true` — byte-identical
+  /// heart-rate packets are live readings — so the radio delivers every
+  /// advertisement for as long as the scan runs, and platforms that fall back
+  /// to software filtering (macOS in particular) keep the controller busy even
+  /// while nothing matches. A band that is switched off, charging, or out of
+  /// range would otherwise leave the scan running at full rate for hours.
+  ///
+  /// After [_idleScanAfter] without a reading the scan is narrowed to one
+  /// [_idleScanWindow] every [_idleScanSleep]; a returning band is therefore
+  /// picked up again within about a minute, and the full-rate scan resumes on
+  /// the first reading.
+  static const _idleScanAfter = Duration(minutes: 3);
+  static const _idleScanWindow = Duration(seconds: 20);
+  static const _idleScanSleep = Duration(minutes: 1);
+
   final Map<String, BleDevice> _scanResults = <String, BleDevice>{};
   final List<HeartRateSample> _history = <HeartRateSample>[];
+  late final UnmodifiableListView<HeartRateSample> _historyView =
+      UnmodifiableListView<HeartRateSample>(_history);
+  final HeartRateHistoryStore _historyStore;
+
+  final ValueNotifier<int> readingChanges = ValueNotifier<int>(0);
+  final ValueNotifier<int> ageChanges = ValueNotifier<int>(0);
+  final ValueNotifier<int> connectionChanges = ValueNotifier<int>(0);
+  final ValueNotifier<int> scanChanges = ValueNotifier<int>(0);
+  final ValueNotifier<int> savedHistoryChanges = ValueNotifier<int>(0);
 
   /// Windows uses the runner's native heart rate channel, which scopes GATT
   /// discovery to 0x180D/0x2A37 and never touches the protected HID service.
@@ -75,6 +106,10 @@ class HeartRateController extends ChangeNotifier {
   Timer? _clockTimer;
   Timer? _demoTimer;
   Timer? _gattRetryTimer;
+  Timer? _gattConnectWatchdog;
+  Timer? _readingNotifyTimer;
+  Timer? _scanNotifyTimer;
+  Timer? _historyNotifyTimer;
   Duration _gattRetryDelay = _gattRetryMinimum;
   bool _gattBusy = false;
   bool _gattConnected = false;
@@ -82,6 +117,12 @@ class HeartRateController extends ChangeNotifier {
   bool _pairingRequested = false;
   DateTime? _lastGattSkipLogAt;
   String _lastGattSkipReason = '';
+
+  /// Address the runner's native channel was asked to subscribe to, and the
+  /// generation of that attempt. Native events carry no address, so these are
+  /// the only way to tell whose link an event belongs to.
+  String? _windowsLinkDeviceId;
+  int _windowsLinkGeneration = 0;
 
   BleDevice? _selectedDevice;
   String? _lastDeviceId;
@@ -98,6 +139,7 @@ class HeartRateController extends ChangeNotifier {
   bool? _sensorContactDetected;
   bool _initialized = false;
   bool _isScanning = false;
+  bool _isPersistentScan = false;
   bool _scanHeartRateOnly = true;
   bool _isDemo = false;
   bool _disposed = false;
@@ -106,6 +148,15 @@ class HeartRateController extends ChangeNotifier {
   DateTime? _lastAdvLogAt;
   int _suppressedAdvLogs = 0;
   DateTime? _lastParseLogAt;
+  DateTime _lastReadingNotificationAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastScanNotificationAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _lastKnownReadingStale = true;
+  int _historyTotalBpm = 0;
+  int _liveUiPauseCount = 0;
+  String? _activeHistorySessionId;
+  List<BleDevice>? _sortedScanDevices;
+  DateTime? _idleScanWindowUntil;
+  DateTime? _idleScanNextProbeAt;
 
   AvailabilityState get availability => _availability;
   MonitorStatus get status => _status;
@@ -122,7 +173,19 @@ class HeartRateController extends ChangeNotifier {
   int? get maximumBpm => _maximumBpm;
   double? get latestRrIntervalMs => _latestRrIntervalMs;
   bool? get sensorContactDetected => _sensorContactDetected;
-  List<HeartRateSample> get history => List.unmodifiable(_history);
+  List<HeartRateSample> get history => _historyView;
+  List<HeartRateHistoryPoint> get savedHistory => _historyStore.points;
+  List<HeartRateHistoryNote> get savedHistoryNotes => _historyStore.notes;
+  List<HeartRateHistorySession> get savedHistorySessions =>
+      _historyStore.sessions;
+  bool get savedHistoryIsLoaded => _historyStore.isLoaded;
+  int get savedHistoryRevision => savedHistoryChanges.value;
+  Duration get historyRetention => _historyStore.retentionPeriod;
+  int get historyMaxPoints => _historyStore.maxPoints;
+
+  HeartRateHistoryNote? noteForHistoryPoint(String pointId) {
+    return _historyStore.noteForPoint(pointId);
+  }
 
   /// The most recently used device, reconstructed from persisted state.
   BleDevice? get lastDevice {
@@ -145,14 +208,14 @@ class HeartRateController extends ChangeNotifier {
     if (_history.isEmpty) {
       return null;
     }
-    final total = _history.fold<int>(
-      0,
-      (sum, sample) => sum + sample.beatsPerMinute,
-    );
-    return (total / _history.length).round();
+    return (_historyTotalBpm / _history.length).round();
   }
 
   List<BleDevice> get scanDevices {
+    final cached = _sortedScanDevices;
+    if (cached != null) {
+      return cached;
+    }
     final devices = _scanResults.values.toList();
     devices.sort((left, right) {
       final leftSupportsHeartRate = _advertisesHeartRate(left);
@@ -162,7 +225,8 @@ class HeartRateController extends ChangeNotifier {
       }
       return (right.rssi ?? -127).compareTo(left.rssi ?? -127);
     });
-    return devices;
+    _sortedScanDevices = List<BleDevice>.unmodifiable(devices);
+    return _sortedScanDevices!;
   }
 
   String get statusLabel {
@@ -209,15 +273,9 @@ class HeartRateController extends ChangeNotifier {
       );
     }
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      // The selected device is only reachable through its advertisements,
-      // so keep the scan alive whenever it drops for any reason.
-      if (_selectedDevice != null &&
-          !_isDemo &&
-          !_isScanning &&
-          !_gattConnected &&
-          _availability == AvailabilityState.poweredOn) {
-        unawaited(_startPersistentScan());
-      }
+      // The selected device is only reachable through its advertisements, so
+      // keep the scan alive — duty-cycled once the band goes quiet.
+      _maintainPersistentScan();
       if (_selectedDevice != null &&
           !_isDemo &&
           _status == MonitorStatus.receiving &&
@@ -225,7 +283,12 @@ class HeartRateController extends ChangeNotifier {
         _logStaleWatchdog();
       }
       if (_status == MonitorStatus.receiving || _isDemo) {
-        _notify();
+        _notifyAge();
+      }
+      final stale = readingIsStale;
+      if (stale != _lastKnownReadingStale) {
+        _lastKnownReadingStale = stale;
+        _notifyConnection();
       }
     });
 
@@ -237,12 +300,21 @@ class HeartRateController extends ChangeNotifier {
       // Persistence is optional; scanning still works without it.
     }
 
+    unawaited(_loadSavedHistory());
     await _refreshAvailability();
     if (_lastDeviceId != null && _availability == AvailabilityState.poweredOn) {
       // Restore the previous session hands-free: selecting the device is
       // enough, its broadcasts carry the readings.
       unawaited(selectDevice(lastDevice!));
     }
+  }
+
+  Future<void> _loadSavedHistory() async {
+    await _historyStore.load();
+    if (_historyStore.loadError case final error?) {
+      _log('history load failed: ${_readableError(error)}');
+    }
+    _notifySavedHistory(immediate: true);
   }
 
   Future<void> refreshAvailability() => _refreshAvailability();
@@ -253,6 +325,7 @@ class HeartRateController extends ChangeNotifier {
     }
 
     _errorMessage = null;
+    _isPersistentScan = false;
     _scanResults.clear();
     final rememberedDevice = lastDevice;
     if (rememberedDevice != null) {
@@ -262,7 +335,8 @@ class HeartRateController extends ChangeNotifier {
     }
     _scanHeartRateOnly = heartRateOnly;
     _isScanning = true;
-    _notify();
+    _invalidateScanDevices();
+    _notifyScan(immediate: true);
 
     try {
       await _refreshAvailability();
@@ -283,7 +357,7 @@ class HeartRateController extends ChangeNotifier {
           unawaited(stopScan());
         });
       }
-      _notify();
+      _notifyScan(immediate: true);
     } on Object catch (error) {
       _isScanning = false;
       _setError('无法开始扫描：${_readableError(error)}');
@@ -295,6 +369,7 @@ class HeartRateController extends ChangeNotifier {
     _scanTimer = null;
     final wasScanning = _isScanning;
     _isScanning = false;
+    _isPersistentScan = false;
 
     if (wasScanning) {
       try {
@@ -304,7 +379,7 @@ class HeartRateController extends ChangeNotifier {
       }
     }
     if (notify) {
-      _notify();
+      _notifyScan(immediate: true);
     }
   }
 
@@ -316,6 +391,7 @@ class HeartRateController extends ChangeNotifier {
     }
 
     final previousDeviceId = _selectedDevice?.deviceId;
+    _endHistorySession();
     await stopScan(notify: false);
     if (previousDeviceId != null) {
       await _releaseGattSession(previousDeviceId);
@@ -326,7 +402,9 @@ class HeartRateController extends ChangeNotifier {
     _errorMessage = null;
     _clearMeasurement();
     _sessionStartedAt = DateTime.now();
-    _notify();
+    _startHistorySession(device, _sessionStartedAt!);
+    _notifyConnection();
+    _notifyReading(immediate: true);
 
     unawaited(_rememberDevice(device));
     await _startPersistentScan();
@@ -345,6 +423,7 @@ class HeartRateController extends ChangeNotifier {
     }
 
     final deviceId = _selectedDevice?.deviceId;
+    _endHistorySession();
     await stopScan(notify: false);
     await _releaseGattSession(deviceId);
     _pairingRequested = false;
@@ -352,7 +431,8 @@ class HeartRateController extends ChangeNotifier {
     _status = MonitorStatus.idle;
     _errorMessage = null;
     _clearMeasurement();
-    _notify();
+    _notifyConnection();
+    _notifyReading(immediate: true);
   }
 
   Future<void> toggleDemo() async {
@@ -369,7 +449,64 @@ class HeartRateController extends ChangeNotifier {
       return;
     }
     _errorMessage = null;
-    _notify();
+    _notifyConnection();
+  }
+
+  Future<void> saveHistoryNote(String pointId, String text) async {
+    await _historyStore.saveNote(pointId: pointId, text: text);
+    _notifySavedHistory(immediate: true);
+  }
+
+  Future<void> removeHistoryNote(String pointId) async {
+    await _historyStore.removeNote(pointId);
+    _notifySavedHistory(immediate: true);
+  }
+
+  Future<void> clearSavedHistory() async {
+    _activeHistorySessionId = null;
+    await _historyStore.clearAll();
+    final selected = _selectedDevice;
+    if (selected != null) {
+      _startHistorySession(selected, DateTime.now());
+    }
+    _notifySavedHistory(immediate: true);
+  }
+
+  Future<bool> deleteHistorySession(String sessionId) async {
+    if (sessionId == _activeHistorySessionId) {
+      return false;
+    }
+    final deleted = await _historyStore.deleteSession(sessionId);
+    if (deleted) {
+      _notifySavedHistory(immediate: true);
+    }
+    return deleted;
+  }
+
+  void pauseLiveUiNotifications() {
+    _liveUiPauseCount++;
+  }
+
+  void resumeLiveUiNotifications() {
+    if (_liveUiPauseCount == 0) {
+      return;
+    }
+    _liveUiPauseCount--;
+    if (_liveUiPauseCount == 0) {
+      // This is usually called from a route's dispose(), while Flutter is
+      // still finalizing the element tree. Notify after the current frame so
+      // listeners are never marked dirty while the widget tree is locked.
+      scheduleMicrotask(() {
+        if (_disposed || _liveUiPauseCount > 0) {
+          return;
+        }
+        _notifyConnection();
+        _notifyReading(immediate: true);
+        _notifyAge();
+        _notifyScan(immediate: true);
+        _notifySavedHistory(immediate: true);
+      });
+    }
   }
 
   Future<void> _startPersistentScan() async {
@@ -379,22 +516,95 @@ class HeartRateController extends ChangeNotifier {
       return;
     }
     _isScanning = true;
-    _notify();
+    _isPersistentScan = true;
+    _notifyScan(immediate: true);
 
     try {
-      // Unfiltered: the heart rate may arrive in the 180D service data or in
-      // the Xiaomi manufacturer payload, and the filter must not drop either.
-      // skipDuplicates must stay off here: a band whose BPM holds steady
-      // re-broadcasts byte-identical packets, and deduplication would silence
-      // them until the reading goes stale and the animation stops.
-      await UniversalBle.startScan(skipDuplicates: false);
+      // Keep the scan scoped to the two supported broadcast shapes. The
+      // filter conditions are ORed by universal_ble, and skipDuplicates must
+      // stay off because byte-identical heart-rate packets are live readings.
+      await UniversalBle.startScan(
+        scanFilter: ScanFilter(
+          withServices: const <String>[heartRateServiceUuid],
+          withServiceData: const <String>[heartRateServiceUuid],
+          withManufacturerData: <ManufacturerDataFilter>[
+            ManufacturerDataFilter(companyIdentifier: xiaomiCompanyId),
+          ],
+        ),
+        skipDuplicates: false,
+      );
       _log('persistent scan started for ${_selectedDevice?.deviceId}');
     } on Object catch (error) {
       _isScanning = false;
+      _isPersistentScan = false;
       _setError('无法开始扫描：${_readableError(error)}');
       return;
     }
-    _notify();
+    _notifyScan(immediate: true);
+  }
+
+  /// Keeps the advertisement scan alive, dropping to a low duty cycle while the
+  /// selected band stays silent (see [_idleScanAfter]).
+  void _maintainPersistentScan() {
+    final canScan =
+        _selectedDevice != null &&
+        !_isDemo &&
+        !_gattConnected &&
+        _availability == AvailabilityState.poweredOn;
+    if (!canScan) {
+      _idleScanWindowUntil = null;
+      _idleScanNextProbeAt = null;
+      return;
+    }
+    // A scan started from the device dialog belongs to that dialog; never stop
+    // or take it over from here.
+    if (_isScanning && !_isPersistentScan) {
+      return;
+    }
+    final now = DateTime.now();
+    if (!_isBandSilent(now)) {
+      _idleScanWindowUntil = null;
+      _idleScanNextProbeAt = null;
+      if (!_isScanning) {
+        unawaited(_startPersistentScan());
+      }
+      return;
+    }
+    final windowUntil = _idleScanWindowUntil;
+    if (windowUntil != null) {
+      if (now.isBefore(windowUntil)) {
+        return;
+      }
+      // Probe window elapsed without a reading: sleep until the next one.
+      _idleScanWindowUntil = null;
+      _idleScanNextProbeAt = now.add(_idleScanSleep);
+      if (_isScanning) {
+        unawaited(stopScan(notify: false));
+      }
+      return;
+    }
+    final nextProbeAt = _idleScanNextProbeAt;
+    if (nextProbeAt != null && now.isBefore(nextProbeAt)) {
+      return;
+    }
+    _idleScanNextProbeAt = null;
+    _idleScanWindowUntil = now.add(_idleScanWindow);
+    if (!_isScanning) {
+      unawaited(_startPersistentScan());
+    }
+  }
+
+  /// True when the selected band has delivered nothing for [_idleScanAfter].
+  ///
+  /// The anchor is the last reading, or the start of the current session when
+  /// no reading has arrived yet, so a freshly selected device always keeps the
+  /// full-rate scan for at least [idleScanAfter].
+  bool _isBandSilent(DateTime now) {
+    final anchor = _lastReadingAt ?? _sessionStartedAt;
+    if (anchor == null) {
+      return false;
+    }
+    return now.difference(anchor) >= _idleScanAfter;
   }
 
   /// Opens the standard Heart Rate Profile session for the selected band:
@@ -424,10 +634,19 @@ class HeartRateController extends ChangeNotifier {
     // stays true until a ready/error event arrives.
     if (_useWindowsHeartLink) {
       _log('native gatt connect attempt for ${selected.deviceId}');
+      // The native channel reports progress only through events. Record which
+      // attempt may drive the state machine and arm a watchdog: a hung native
+      // call would otherwise leave _gattBusy set forever, silently blocking
+      // every later reconnect.
+      _windowsLinkDeviceId = selected.deviceId;
+      _windowsLinkGeneration = generation;
+      _armWindowsLinkWatchdog(generation, selected.deviceId);
       try {
         await _windowsHeartLink!.subscribe(selected.deviceId);
       } on Object catch (error) {
         if (generation == _gattAttemptGeneration) {
+          _cancelWindowsLinkWatchdog();
+          _windowsLinkDeviceId = null;
           _gattBusy = false;
           _log('native subscribe failed: ${_readableError(error)}');
           _scheduleGattRetry();
@@ -566,10 +785,15 @@ class HeartRateController extends ChangeNotifier {
       // The clock timer restarts scanning automatically if the link drops.
       await stopScan(notify: false);
       _log('gatt session ready, listening on 2A37');
-      _notify();
+      _notifyConnection();
     } on Object catch (error) {
       if (_isCurrentGattAttempt(generation, selected.deviceId)) {
         _log('gatt session failed: ${_readableError(error)}');
+        // A connect that timed out can leave CoreBluetooth with a pending
+        // connection for the peripheral. Without cancelling it, later attempts
+        // queue behind the stuck one and time out as well, so the band never
+        // reconnects even once it is back in range.
+        await _disconnectGatt(selected.deviceId);
         _scheduleGattRetry();
       }
     } finally {
@@ -645,7 +869,16 @@ class HeartRateController extends ChangeNotifier {
 
   /// Events from the runner's native heart rate channel (Windows only).
   void _handleWindowsLinkEvent(WindowsHeartLinkEvent event) {
-    if (_selectedDevice == null) {
+    final selected = _selectedDevice;
+    if (selected == null || _isDemo) {
+      return;
+    }
+    // The native payload carries no address, so only trust events while the
+    // Dart side still believes this exact device owns the link and the attempt
+    // has not been superseded. Otherwise a late value from the previous band
+    // would be recorded as the new one, and a late ready would fake a link.
+    if (_windowsLinkDeviceId != selected.deviceId ||
+        _windowsLinkGeneration != _gattAttemptGeneration) {
       return;
     }
     final bytes = event.bytes;
@@ -655,15 +888,18 @@ class HeartRateController extends ChangeNotifier {
     }
     switch (event.state) {
       case WindowsHeartLinkState.ready:
+        _cancelWindowsLinkWatchdog();
         _gattBusy = false;
         _gattConnected = true;
+        // A previous attempt may have surfaced a timeout; the link is up now.
+        _errorMessage = null;
         _gattRetryDelay = _gattRetryMinimum;
         _lastGattSkipLogAt = null;
         _lastGattSkipReason = '';
         _log('native gatt session ready, listening on 2A37');
         // Connected: the band stops advertising and the scan is redundant.
         unawaited(stopScan(notify: false));
-        _notify();
+        _notifyConnection();
       case WindowsHeartLinkState.disconnected:
         _log(
           'native gatt link lost'
@@ -680,7 +916,39 @@ class HeartRateController extends ChangeNotifier {
     }
   }
 
+  /// Fails a native attempt that never reports ready or error.
+  ///
+  /// Without this the native path has no timeout at all: `_gattBusy` would stay
+  /// true forever, every later [_ensureGattSession] would bail out as "attempt
+  /// already in flight", and the UI would keep claiming it is waiting for data.
+  void _armWindowsLinkWatchdog(int generation, String deviceId) {
+    _cancelWindowsLinkWatchdog();
+    _gattConnectWatchdog = Timer(_gattConnectTimeout, () {
+      _gattConnectWatchdog = null;
+      if (_disposed ||
+          generation != _gattAttemptGeneration ||
+          _gattConnected ||
+          _windowsLinkDeviceId != deviceId) {
+        return;
+      }
+      _log(
+        'native gatt attempt timed out after ${_gattConnectTimeout.inSeconds}s',
+      );
+      _windowsLinkDeviceId = null;
+      _gattBusy = false;
+      _setError('连接手环超时，正在重试');
+      _handleWindowsLinkDown();
+    });
+  }
+
+  void _cancelWindowsLinkWatchdog() {
+    _gattConnectWatchdog?.cancel();
+    _gattConnectWatchdog = null;
+  }
+
   void _handleWindowsLinkDown() {
+    _cancelWindowsLinkWatchdog();
+    _windowsLinkDeviceId = null;
     _gattBusy = false;
     _gattConnected = false;
     _scheduleGattRetry();
@@ -728,10 +996,12 @@ class HeartRateController extends ChangeNotifier {
     _log('gatt retry in ${_gattRetryDelay.inSeconds}s');
     final doubled = _gattRetryDelay * 2;
     _gattRetryDelay = doubled < _gattRetryMaximum ? doubled : _gattRetryMaximum;
-    _notify();
+    _notifyConnection();
   }
 
   void _teardownGattSession() {
+    _cancelWindowsLinkWatchdog();
+    _windowsLinkDeviceId = null;
     _gattConnected = false;
     // Native side is a no-op when no session is up.
     unawaited(_windowsHeartLink?.unsubscribe());
@@ -756,7 +1026,7 @@ class HeartRateController extends ChangeNotifier {
     } on Object {
       _availability = AvailabilityState.unknown;
     }
-    _notify();
+    _notifyConnection();
   }
 
   void _handleAvailabilityChange(AvailabilityState availability) {
@@ -767,31 +1037,45 @@ class HeartRateController extends ChangeNotifier {
     if (availability != AvailabilityState.poweredOn && _isScanning) {
       unawaited(stopScan(notify: false));
     }
-    _notify();
+    _notifyConnection();
   }
 
   void _handleScanResult(BleDevice device) {
     if (!_isScanning) {
       return;
     }
-    _addScanResult(device);
-
     final selected = _selectedDevice;
-    if (selected != null) {
-      if (device.deviceId == selected.deviceId) {
-        // Fold the freshest advertisement data (name, RSSI) into the
-        // selected device so the UI stays current.
-        mergeBleDevice(selected, device);
-        _logAdvertisement(device);
-        _processAdvertisement(device);
-        // Fresh advertisement means the band is reachable: (re)open the
-        // GATT session unless one is already up or backing off.
-        if (!_isDemo) {
-          unawaited(_ensureGattSession());
-        }
+    if (_isPersistentScan && selected != null) {
+      if (device.deviceId != selected.deviceId) {
+        return;
       }
-    } else {
+      // Once a device is selected, drop every other advertisement before
+      // touching the scan cache or parsing payloads.
+      final previousName = selected.name;
+      if (mergeBleDevice(selected, device) && selected.name != previousName) {
+        _notifyConnection();
+      }
+      _logAdvertisement(device);
       _processAdvertisement(device);
+      // Fresh advertisement means the band is reachable: (re)open the
+      // GATT session unless one is already up or backing off.
+      if (!_isDemo) {
+        unawaited(_ensureGattSession());
+      }
+      return;
+    }
+    _addScanResult(device);
+    if (selected == null) {
+      _processAdvertisement(device);
+    } else if (device.deviceId == selected.deviceId) {
+      final previousName = selected.name;
+      if (mergeBleDevice(selected, device) && selected.name != previousName) {
+        _notifyConnection();
+      }
+      _processAdvertisement(device);
+      if (!_isDemo) {
+        unawaited(_ensureGattSession());
+      }
     }
   }
 
@@ -851,11 +1135,13 @@ class HeartRateController extends ChangeNotifier {
     final existing = _scanResults[device.deviceId];
     if (existing == null) {
       _scanResults[device.deviceId] = device;
-      _notify();
+      _invalidateScanDevices();
+      _notifyScan();
       return;
     }
     if (mergeBleDevice(existing, device)) {
-      _notify();
+      _invalidateScanDevices();
+      _notifyScan();
     }
   }
 
@@ -937,6 +1223,7 @@ class HeartRateController extends ChangeNotifier {
   }
 
   void _recordMeasurement(HeartRateMeasurement measurement) {
+    final recordedAt = DateTime.now();
     _currentBpm = measurement.beatsPerMinute;
     _minimumBpm = math.min(
       _minimumBpm ?? measurement.beatsPerMinute,
@@ -950,20 +1237,53 @@ class HeartRateController extends ChangeNotifier {
       _latestRrIntervalMs = measurement.rrIntervalsMs.last;
     }
     _sensorContactDetected = measurement.sensorContactDetected;
-    _lastReadingAt = DateTime.now();
+    _lastReadingAt = recordedAt;
     _history.add(
       HeartRateSample(
         beatsPerMinute: measurement.beatsPerMinute,
-        recordedAt: _lastReadingAt!,
+        recordedAt: recordedAt,
       ),
     );
+    _historyTotalBpm += measurement.beatsPerMinute;
     if (_history.length > 180) {
+      final removedCount = _history.length - 180;
+      for (var index = 0; index < removedCount; index++) {
+        _historyTotalBpm -= _history[index].beatsPerMinute;
+      }
       _history.removeRange(0, _history.length - 180);
     }
     if (_history.length == 1) {
       _log('first reading: bpm=${measurement.beatsPerMinute}');
     }
-    _notify();
+    if (!_isDemo && _selectedDevice != null) {
+      final sessionId = _activeHistorySessionId;
+      if (sessionId != null) {
+        final storedPoint = _historyStore.addMeasurement(
+          beatsPerMinute: measurement.beatsPerMinute,
+          recordedAt: recordedAt,
+          source: _historySourceLabel(),
+          sessionId: sessionId,
+        );
+        if (storedPoint != null) {
+          _notifySavedHistory();
+        }
+      }
+    }
+    final stale = readingIsStale;
+    if (stale != _lastKnownReadingStale) {
+      _lastKnownReadingStale = stale;
+      _notifyConnection();
+    }
+    _notifyReading();
+  }
+
+  String _historySourceLabel() {
+    final device = _selectedDevice;
+    if (device == null) {
+      return '未知设备';
+    }
+    final name = device.name?.trim();
+    return name == null || name.isEmpty ? device.deviceId : name;
   }
 
   Future<void> _rememberDevice(BleDevice device) async {
@@ -984,6 +1304,7 @@ class HeartRateController extends ChangeNotifier {
   }
 
   void _startDemo() {
+    _endHistorySession();
     _gattRetryTimer?.cancel();
     _gattRetryTimer = null;
     _isDemo = true;
@@ -996,7 +1317,7 @@ class HeartRateController extends ChangeNotifier {
     _demoTimer = Timer.periodic(const Duration(milliseconds: 900), (_) {
       _recordDemoBeat();
     });
-    _notify();
+    _notifyConnection();
   }
 
   void _recordDemoBeat() {
@@ -1008,6 +1329,7 @@ class HeartRateController extends ChangeNotifier {
       HeartRateMeasurement(beatsPerMinute: bpm, sensorContactDetected: true),
     );
     _latestRrIntervalMs = rrIntervalMs;
+    _notifyReading(immediate: true);
   }
 
   void _stopDemo({bool notify = true}) {
@@ -1022,7 +1344,8 @@ class HeartRateController extends ChangeNotifier {
       _gattRetryDelay = _gattRetryMinimum;
     }
     if (notify) {
-      _notify();
+      _notifyConnection();
+      _notifyReading(immediate: true);
     }
   }
 
@@ -1034,7 +1357,31 @@ class HeartRateController extends ChangeNotifier {
     if (!_gattConnected && !_isScanning) {
       await _startPersistentScan();
     }
+    _startHistorySession(selected, DateTime.now());
     await _ensureGattSession();
+  }
+
+  void _startHistorySession(BleDevice device, DateTime startedAt) {
+    if (_activeHistorySessionId != null) {
+      return;
+    }
+    final session = _historyStore.startSession(
+      source: _historySourceLabel(),
+      deviceId: device.deviceId,
+      startedAt: startedAt,
+    );
+    _activeHistorySessionId = session.id;
+    _notifySavedHistory(immediate: true);
+  }
+
+  void _endHistorySession() {
+    final sessionId = _activeHistorySessionId;
+    if (sessionId == null) {
+      return;
+    }
+    _activeHistorySessionId = null;
+    _historyStore.endSession(sessionId);
+    _notifySavedHistory(immediate: true);
   }
 
   void _clearMeasurement() {
@@ -1046,11 +1393,12 @@ class HeartRateController extends ChangeNotifier {
     _lastReadingAt = null;
     _sessionStartedAt = null;
     _history.clear();
+    _historyTotalBpm = 0;
   }
 
   void _setError(String message) {
     _errorMessage = message;
-    _notify();
+    _notifyConnection();
   }
 
   String _readableError(Object error) {
@@ -1067,10 +1415,86 @@ class HeartRateController extends ChangeNotifier {
     );
   }
 
-  void _notify() {
-    if (!_disposed) {
-      notifyListeners();
+  void _notifyConnection() {
+    if (_disposed || _liveUiPauseCount > 0) {
+      return;
     }
+    connectionChanges.value++;
+    notifyListeners();
+  }
+
+  void _notifyReading({bool immediate = false}) {
+    if (_disposed || _liveUiPauseCount > 0) {
+      return;
+    }
+    final now = DateTime.now();
+    if (immediate ||
+        now.difference(_lastReadingNotificationAt) >=
+            const Duration(milliseconds: 500)) {
+      _readingNotifyTimer?.cancel();
+      _readingNotifyTimer = null;
+      _lastReadingNotificationAt = now;
+      readingChanges.value++;
+      return;
+    }
+    _readingNotifyTimer ??= Timer(const Duration(milliseconds: 500), () {
+      _readingNotifyTimer = null;
+      if (!_disposed && _liveUiPauseCount == 0) {
+        _lastReadingNotificationAt = DateTime.now();
+        readingChanges.value++;
+      }
+    });
+  }
+
+  void _notifyScan({bool immediate = false}) {
+    if (_disposed || _liveUiPauseCount > 0) {
+      return;
+    }
+    final now = DateTime.now();
+    if (immediate ||
+        now.difference(_lastScanNotificationAt) >=
+            const Duration(milliseconds: 220)) {
+      _scanNotifyTimer?.cancel();
+      _scanNotifyTimer = null;
+      _lastScanNotificationAt = now;
+      scanChanges.value++;
+      return;
+    }
+    _scanNotifyTimer ??= Timer(const Duration(milliseconds: 220), () {
+      _scanNotifyTimer = null;
+      if (!_disposed && _liveUiPauseCount == 0) {
+        _lastScanNotificationAt = DateTime.now();
+        scanChanges.value++;
+      }
+    });
+  }
+
+  void _notifyAge() {
+    if (!_disposed && _liveUiPauseCount == 0) {
+      ageChanges.value++;
+    }
+  }
+
+  void _notifySavedHistory({bool immediate = false}) {
+    if (_disposed) {
+      return;
+    }
+    if (immediate) {
+      _historyNotifyTimer?.cancel();
+      _historyNotifyTimer = null;
+      savedHistoryChanges.value++;
+      return;
+    }
+    _historyNotifyTimer ??= Timer(const Duration(seconds: 5), () {
+      _historyNotifyTimer = null;
+      if (!_disposed) {
+        savedHistoryChanges.value++;
+      }
+    });
+  }
+
+  void _invalidateScanDevices() {
+    _sortedScanDevices = null;
   }
 
   void _logStaleWatchdog() {
@@ -1096,10 +1520,15 @@ class HeartRateController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _endHistorySession();
     _scanTimer?.cancel();
     _clockTimer?.cancel();
     _demoTimer?.cancel();
     _gattRetryTimer?.cancel();
+    _gattConnectWatchdog?.cancel();
+    _readingNotifyTimer?.cancel();
+    _scanNotifyTimer?.cancel();
+    _historyNotifyTimer?.cancel();
     _teardownGattSession();
     final deviceId = _selectedDevice?.deviceId;
     if (deviceId != null) {
@@ -1113,6 +1542,17 @@ class HeartRateController extends ChangeNotifier {
     unawaited(_availabilitySubscription?.cancel());
     unawaited(_scanSubscription?.cancel());
     unawaited(stopScan(notify: false));
+    unawaited(
+      _historyStore
+          .flush()
+          .catchError((Object _) {})
+          .whenComplete(_historyStore.dispose),
+    );
+    readingChanges.dispose();
+    ageChanges.dispose();
+    connectionChanges.dispose();
+    scanChanges.dispose();
+    savedHistoryChanges.dispose();
     super.dispose();
   }
 }

@@ -10,6 +10,7 @@ import '../widgets/game_overlay_settings_dialog.dart';
 import '../widgets/heart_rate_chart.dart';
 import '../widgets/heartbeat_visualizer.dart';
 import 'game_overlay_settings.dart';
+import 'heart_rate_history_page.dart';
 
 class MonitorPage extends StatelessWidget {
   const MonitorPage({
@@ -27,39 +28,34 @@ class MonitorPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, child) {
-        return Scaffold(
-          backgroundColor: AppColors.paper,
-          body: LayoutBuilder(
-            builder: (context, constraints) {
-              if (constraints.maxWidth >= 1160) {
-                return _WideLayout(
-                  controller: controller,
-                  onEnterGameOverlay: onEnterGameOverlay,
-                  overlaySettings: overlaySettings,
-                  onOverlaySettingsChanged: onOverlaySettingsChanged,
-                );
-              }
-              if (constraints.maxWidth >= 760) {
-                return _MediumLayout(
-                  controller: controller,
-                  onEnterGameOverlay: onEnterGameOverlay,
-                  overlaySettings: overlaySettings,
-                  onOverlaySettingsChanged: onOverlaySettingsChanged,
-                );
-              }
-              return _CompactLayout(
-                controller: controller,
-                onEnterGameOverlay: onEnterGameOverlay,
-                overlaySettings: overlaySettings,
-                onOverlaySettingsChanged: onOverlaySettingsChanged,
-              );
-            },
-          ),
-        );
-      },
+    return Scaffold(
+      backgroundColor: AppColors.paper,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth >= 1160) {
+            return _WideLayout(
+              controller: controller,
+              onEnterGameOverlay: onEnterGameOverlay,
+              overlaySettings: overlaySettings,
+              onOverlaySettingsChanged: onOverlaySettingsChanged,
+            );
+          }
+          if (constraints.maxWidth >= 760) {
+            return _MediumLayout(
+              controller: controller,
+              onEnterGameOverlay: onEnterGameOverlay,
+              overlaySettings: overlaySettings,
+              onOverlaySettingsChanged: onOverlaySettingsChanged,
+            );
+          }
+          return _CompactLayout(
+            controller: controller,
+            onEnterGameOverlay: onEnterGameOverlay,
+            overlaySettings: overlaySettings,
+            onOverlaySettingsChanged: onOverlaySettingsChanged,
+          );
+        },
+      ),
     );
   }
 }
@@ -215,10 +211,15 @@ class _Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller.connectionChanges,
+      builder: (context, child) => _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     final selected = controller.selectedDevice != null;
-    final active =
-        selected ||
-        controller.status == MonitorStatus.error;
+    final active = selected || controller.status == MonitorStatus.error;
     final statusColor = _connectionColor(controller);
 
     return ColoredBox(
@@ -344,7 +345,8 @@ class _Sidebar extends StatelessWidget {
               if (selected) ...[
                 const SizedBox(height: 10),
                 OutlinedButton.icon(
-                  onPressed: () => unawaited(showDeviceScanner(context, controller)),
+                  onPressed: () =>
+                      unawaited(showDeviceScanner(context, controller)),
                   icon: const Icon(Icons.swap_horiz, size: 18),
                   label: const Text('更换手环'),
                   style: OutlinedButton.styleFrom(
@@ -507,6 +509,21 @@ class _MonitorMain extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Only the reading and connection revisions matter here: staleness
+    // transitions are announced through connectionChanges, and the ticking
+    // "x 秒前更新" text lives in _BpmReadout, which listens to ageChanges on its
+    // own. Keeping ageChanges out of this merge avoids rebuilding the whole
+    // central area once per second.
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        controller.readingChanges,
+        controller.connectionChanges,
+      ]),
+      builder: (context, child) => _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     return Container(
       color: AppColors.paper,
       child: Column(
@@ -662,6 +679,13 @@ class _BpmReadout extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller.ageChanges,
+      builder: (context, child) => _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     final bpm = controller.currentBpm;
     final rhythm = _rhythmLabel(controller);
     final accent = controller.isDemo
@@ -848,7 +872,16 @@ class _DetailsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final samples = controller.history;
+    // The panel shell (labels, dividers, spacing) only depends on the
+    // connection state. Every block that shows a live value listens on its own,
+    // so a new reading no longer rebuilds the whole right-hand column.
+    return AnimatedBuilder(
+      animation: controller.connectionChanges,
+      builder: (context, child) => _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: AppColors.surface,
@@ -866,55 +899,122 @@ class _DetailsPanel extends StatelessWidget {
               style: TextStyle(color: AppColors.inkMuted, fontSize: 11),
             ),
             const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: _Metric(
-                    label: '最低',
-                    value: controller.minimumBpm?.toString() ?? '--',
-                    unit: 'BPM',
-                  ),
-                ),
-                const SizedBox(width: 18),
-                Expanded(
-                  child: _Metric(
-                    label: '平均',
-                    value: controller.averageBpm?.toString() ?? '--',
-                    unit: 'BPM',
-                  ),
-                ),
-                const SizedBox(width: 18),
-                Expanded(
-                  child: _Metric(
-                    label: '最高',
-                    value: controller.maximumBpm?.toString() ?? '--',
-                    unit: 'BPM',
-                  ),
-                ),
-              ],
-            ),
+            _DetailsMetrics(controller: controller),
             const SizedBox(height: 22),
             const Divider(height: 1),
-            _DetailRow(
-              label: 'R-R 间期',
-              value: controller.latestRrIntervalMs == null
-                  ? '--'
-                  : '${controller.latestRrIntervalMs!.round()} ms',
-            ),
-            _DetailRow(
-              label: '皮肤接触',
-              value: switch (controller.sensorContactDetected) {
-                true => '已接触',
-                false => '未接触',
-                null => '未提供',
-              },
-            ),
-            _DetailRow(
-              label: '当前心律',
-              value: _bpmRange(controller.currentBpm),
-              isLast: true,
-            ),
+            _DetailsReadingRows(controller: controller),
             const SizedBox(height: 26),
+            _DetailsTrend(controller: controller),
+            const SizedBox(height: 25),
+            const Divider(height: 1),
+            const SizedBox(height: 20),
+            Text('数据源', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 13),
+            _DetailsSourceRows(controller: controller),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailsMetrics extends StatelessWidget {
+  const _DetailsMetrics({required this.controller});
+
+  final HeartRateController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        controller.readingChanges,
+        controller.connectionChanges,
+      ]),
+      builder: (context, child) => Row(
+        children: [
+          Expanded(
+            child: _Metric(
+              label: '最低',
+              value: controller.minimumBpm?.toString() ?? '--',
+              unit: 'BPM',
+            ),
+          ),
+          const SizedBox(width: 18),
+          Expanded(
+            child: _Metric(
+              label: '平均',
+              value: controller.averageBpm?.toString() ?? '--',
+              unit: 'BPM',
+            ),
+          ),
+          const SizedBox(width: 18),
+          Expanded(
+            child: _Metric(
+              label: '最高',
+              value: controller.maximumBpm?.toString() ?? '--',
+              unit: 'BPM',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailsReadingRows extends StatelessWidget {
+  const _DetailsReadingRows({required this.controller});
+
+  final HeartRateController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        controller.readingChanges,
+        controller.connectionChanges,
+      ]),
+      builder: (context, child) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _DetailRow(
+            label: 'R-R 间期',
+            value: controller.latestRrIntervalMs == null
+                ? '--'
+                : '${controller.latestRrIntervalMs!.round()} ms',
+          ),
+          _DetailRow(
+            label: '皮肤接触',
+            value: switch (controller.sensorContactDetected) {
+              true => '已接触',
+              false => '未接触',
+              null => '未提供',
+            },
+          ),
+          _DetailRow(
+            label: '当前心律',
+            value: _bpmRange(controller.currentBpm),
+            isLast: true,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailsTrend extends StatelessWidget {
+  const _DetailsTrend({required this.controller});
+
+  final HeartRateController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller.readingChanges,
+      builder: (context, child) {
+        final samples = controller.history;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
             Row(
               children: [
                 Text('心率趋势', style: Theme.of(context).textTheme.titleMedium),
@@ -924,6 +1024,18 @@ class _DetailsPanel extends StatelessWidget {
                   style: const TextStyle(
                     color: AppColors.inkMuted,
                     fontSize: 10,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                TextButton.icon(
+                  onPressed: () {
+                    unawaited(showHeartRateHistoryPage(context, controller));
+                  },
+                  icon: const Icon(Icons.history, size: 16),
+                  label: const Text('历史'),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 7),
+                    visualDensity: VisualDensity.compact,
                   ),
                 ),
               ],
@@ -944,69 +1056,84 @@ class _DetailsPanel extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 25),
-            const Divider(height: 1),
-            const SizedBox(height: 20),
-            Text('数据源', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 13),
-            _SourceRow(
-              icon: controller.isDemo
-                  ? Icons.science_outlined
-                  : Icons.bluetooth_connected,
-              label: controller.isDemo ? '模拟心率' : _sourceName(controller),
-            ),
-            const SizedBox(height: 9),
-            _SourceRow(
-              icon: Icons.memory,
-              label: controller.isDemo ? '演示数据' : '标准 BLE Heart Rate',
-            ),
-            const SizedBox(height: 9),
-            _SourceRow(
-              icon: Icons.schedule,
-              label: _lastUpdateLabel(controller),
-            ),
           ],
-        ),
+        );
+      },
+    );
+  }
+}
+
+class _DetailsSourceRows extends StatelessWidget {
+  const _DetailsSourceRows({required this.controller});
+
+  final HeartRateController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    // Device/status changes come from connectionChanges; ageChanges keeps the
+    // "x 秒前更新" row ticking even after readings stop.
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        controller.connectionChanges,
+        controller.ageChanges,
+      ]),
+      builder: (context, child) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SourceRow(
+            icon: controller.isDemo
+                ? Icons.science_outlined
+                : Icons.bluetooth_connected,
+            label: controller.isDemo ? '模拟心率' : _sourceName(controller),
+          ),
+          const SizedBox(height: 9),
+          _SourceRow(
+            icon: Icons.memory,
+            label: controller.isDemo ? '演示数据' : '标准 BLE Heart Rate',
+          ),
+          const SizedBox(height: 9),
+          _SourceRow(icon: Icons.schedule, label: _lastUpdateLabel(controller)),
+        ],
       ),
     );
   }
+}
 
-  String _bpmRange(int? bpm) {
-    if (bpm == null) {
-      return '--';
-    }
-    if (bpm < 60) {
-      return '偏慢';
-    }
-    if (bpm > 100) {
-      return '偏快';
-    }
-    return '平稳';
+String _bpmRange(int? bpm) {
+  if (bpm == null) {
+    return '--';
   }
+  if (bpm < 60) {
+    return '偏慢';
+  }
+  if (bpm > 100) {
+    return '偏快';
+  }
+  return '平稳';
+}
 
-  String _sourceName(HeartRateController controller) {
-    final device = controller.selectedDevice;
-    if (device == null) {
-      return '未选择设备';
-    }
-    final name = device.name?.trim();
-    return name == null || name.isEmpty ? device.deviceId : name;
+String _sourceName(HeartRateController controller) {
+  final device = controller.selectedDevice;
+  if (device == null) {
+    return '未选择设备';
   }
+  final name = device.name?.trim();
+  return name == null || name.isEmpty ? device.deviceId : name;
+}
 
-  String _lastUpdateLabel(HeartRateController controller) {
-    final lastReadingAt = controller.lastReadingAt;
-    if (lastReadingAt == null) {
-      return '尚未更新';
-    }
-    final seconds = DateTime.now().difference(lastReadingAt).inSeconds;
-    if (seconds <= 1) {
-      return '刚刚更新';
-    }
-    if (seconds < 60) {
-      return '$seconds 秒前更新';
-    }
-    return '${seconds ~/ 60} 分钟前更新';
+String _lastUpdateLabel(HeartRateController controller) {
+  final lastReadingAt = controller.lastReadingAt;
+  if (lastReadingAt == null) {
+    return '尚未更新';
   }
+  final seconds = DateTime.now().difference(lastReadingAt).inSeconds;
+  if (seconds <= 1) {
+    return '刚刚更新';
+  }
+  if (seconds < 60) {
+    return '$seconds 秒前更新';
+  }
+  return '${seconds ~/ 60} 分钟前更新';
 }
 
 class _Metric extends StatelessWidget {

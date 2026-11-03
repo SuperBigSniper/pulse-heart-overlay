@@ -5,17 +5,54 @@ import 'package:flutter/material.dart';
 import '../heart_rate/heart_rate_controller.dart';
 import '../theme/app_theme.dart';
 
-class HeartRateChart extends StatelessWidget {
+class HeartRateChart extends StatefulWidget {
   const HeartRateChart({super.key, required this.samples, this.height = 136});
 
   final List<HeartRateSample> samples;
   final double height;
 
   @override
+  State<HeartRateChart> createState() => _HeartRateChartState();
+}
+
+class _HeartRateChartState extends State<HeartRateChart> {
+  List<HeartRateSample>? _cachedSamples;
+  int _cachedLength = 0;
+  DateTime? _cachedLastSampleAt;
+  List<int> _values = const <int>[];
+  int _minimum = 0;
+  int _maximum = 0;
+
+  void _updateValues() {
+    final samples = widget.samples;
+    final lastSampleAt = samples.isEmpty ? null : samples.last.recordedAt;
+    if (identical(samples, _cachedSamples) &&
+        _cachedLength == samples.length &&
+        _cachedLastSampleAt == lastSampleAt) {
+      return;
+    }
+    _cachedSamples = samples;
+    _cachedLength = samples.length;
+    _cachedLastSampleAt = lastSampleAt;
+    _values = samples
+        .map((sample) => sample.beatsPerMinute)
+        .toList(growable: false);
+    if (_values.isNotEmpty) {
+      _minimum = _values.reduce(math.min);
+      _maximum = _values.reduce(math.max);
+    } else {
+      _minimum = 0;
+      _maximum = 0;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    _updateValues();
+    final samples = widget.samples;
     if (samples.length < 2) {
       return SizedBox(
-        height: height,
+        height: widget.height,
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: AppColors.paper,
@@ -32,19 +69,15 @@ class HeartRateChart extends StatelessWidget {
       );
     }
 
-    final values = samples.map((sample) => sample.beatsPerMinute).toList();
-    final minimum = values.reduce(math.min);
-    final maximum = values.reduce(math.max);
-
     return Semantics(
-      label: '心率趋势，最低 $minimum，最高 $maximum',
+      label: '心率趋势，最低 $_minimum，最高 $_maximum',
       child: SizedBox(
-        height: height,
+        height: widget.height,
         child: CustomPaint(
           painter: _HeartRateChartPainter(
-            values: values,
-            minimum: minimum,
-            maximum: maximum,
+            values: _values,
+            minimum: _minimum,
+            maximum: _maximum,
           ),
         ),
       ),

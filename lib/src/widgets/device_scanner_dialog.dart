@@ -77,8 +77,12 @@ class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
         width: 640,
         height: screenSize.height.clamp(520, 690),
         child: AnimatedBuilder(
-          animation: widget.controller,
+          animation: Listenable.merge([
+            widget.controller.scanChanges,
+            widget.controller.connectionChanges,
+          ]),
           builder: (context, child) {
+            final devices = widget.controller.scanDevices;
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -110,7 +114,8 @@ class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
                   ),
                 ),
                 _ScanSummary(
-                  controller: widget.controller,
+                  deviceCount: devices.length,
+                  scanning: widget.controller.isScanning,
                   heartRateOnly: _heartRateOnly,
                 ),
                 if (widget.controller.errorMessage case final message?)
@@ -121,7 +126,7 @@ class _DeviceScannerDialogState extends State<DeviceScannerDialog> {
                 const Divider(height: 1),
                 Expanded(
                   child: _DeviceList(
-                    devices: widget.controller.scanDevices,
+                    devices: devices,
                     scanning: widget.controller.isScanning,
                     lastDeviceId: widget.controller.lastDevice?.deviceId,
                     onSelect: _select,
@@ -236,20 +241,26 @@ class _DialogHeader extends StatelessWidget {
 }
 
 class _ScanSummary extends StatelessWidget {
-  const _ScanSummary({required this.controller, required this.heartRateOnly});
+  const _ScanSummary({
+    required this.deviceCount,
+    required this.scanning,
+    required this.heartRateOnly,
+  });
 
-  final HeartRateController controller;
+  final int deviceCount;
+  final bool scanning;
   final bool heartRateOnly;
 
   @override
   Widget build(BuildContext context) {
-    final count = controller.scanDevices.length;
-    final text = heartRateOnly ? '找到 $count 台心率候选设备' : '发现 $count 台蓝牙设备';
+    final text = heartRateOnly
+        ? '找到 $deviceCount 台心率候选设备'
+        : '发现 $deviceCount 台蓝牙设备';
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 14),
       child: Row(
         children: [
-          if (controller.isScanning)
+          if (scanning)
             const SizedBox.square(
               dimension: 13,
               child: CircularProgressIndicator(
