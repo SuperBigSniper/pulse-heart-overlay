@@ -17,17 +17,26 @@ Future<GameOverlaySettings?> showGameOverlaySettingsDialog(
     builder: (context) {
       return StatefulBuilder(
         builder: (context, setDialogState) {
-          final maximumSize = overlayMaximumSizeFor(context);
+          final screenBound = overlayMaximumSizeFor(context);
           final minimumSize = GameOverlayPage.minimumWindowSize;
+          final maximumWidth = math.max(minimumSize.width, screenBound.width);
+          final maximumHeight = math.max(
+            minimumSize.height,
+            screenBound.height,
+          );
+          // Clamp for display only. Rewriting `draft` here (as this used to)
+          // mutates the pending settings during build, so a plain rebuild
+          // silently changes what 保存 will return.
           final overlayWidth = draft.overlayWidth
-              .clamp(minimumSize.width, maximumSize.width)
+              .clamp(minimumSize.width, maximumWidth)
               .toDouble();
           final overlayHeight = draft.overlayHeight
-              .clamp(minimumSize.height, maximumSize.height)
+              .clamp(minimumSize.height, maximumHeight)
               .toDouble();
-          draft = draft.copyWith(
-            overlayWidth: overlayWidth,
-            overlayHeight: overlayHeight,
+          final widthStep = _overlaySizeStep(minimumSize.width, maximumWidth);
+          final heightStep = _overlaySizeStep(
+            minimumSize.height,
+            maximumHeight,
           );
 
           return AlertDialog(
@@ -96,15 +105,20 @@ Future<GameOverlaySettings?> showGameOverlaySettingsDialog(
                         label: '宽度',
                         value: overlayWidth,
                         minimum: minimumSize.width,
-                        maximum: maximumSize.width,
-                        divisions: math.max(
-                          1,
-                          (maximumSize.width - minimumSize.width).round(),
+                        maximum: maximumWidth,
+                        divisions: _overlaySizeDivisions(
+                          minimumSize.width,
+                          maximumWidth,
+                          widthStep,
                         ),
-                        valueLabel: '${draft.overlayWidth.round()} px',
+                        valueLabel: '${overlayWidth.round()} px',
                         onChanged: (value) {
                           setDialogState(() {
-                            draft = draft.copyWith(overlayWidth: value);
+                            draft = draft.copyWith(
+                              overlayWidth: value
+                                  .clamp(minimumSize.width, maximumWidth)
+                                  .toDouble(),
+                            );
                           });
                         },
                       ),
@@ -113,15 +127,20 @@ Future<GameOverlaySettings?> showGameOverlaySettingsDialog(
                         label: '高度',
                         value: overlayHeight,
                         minimum: minimumSize.height,
-                        maximum: maximumSize.height,
-                        divisions: math.max(
-                          1,
-                          (maximumSize.height - minimumSize.height).round(),
+                        maximum: maximumHeight,
+                        divisions: _overlaySizeDivisions(
+                          minimumSize.height,
+                          maximumHeight,
+                          heightStep,
                         ),
-                        valueLabel: '${draft.overlayHeight.round()} px',
+                        valueLabel: '${overlayHeight.round()} px',
                         onChanged: (value) {
                           setDialogState(() {
-                            draft = draft.copyWith(overlayHeight: value);
+                            draft = draft.copyWith(
+                              overlayHeight: value
+                                  .clamp(minimumSize.height, maximumHeight)
+                                  .toDouble(),
+                            );
                           });
                         },
                       ),
@@ -144,7 +163,16 @@ Future<GameOverlaySettings?> showGameOverlaySettingsDialog(
                 child: const Text('取消'),
               ),
               FilledButton(
-                onPressed: () => Navigator.of(context).pop(draft),
+                onPressed: () => Navigator.of(context).pop(
+                  draft.copyWith(
+                    overlayWidth: draft.overlayWidth
+                        .clamp(minimumSize.width, maximumWidth)
+                        .toDouble(),
+                    overlayHeight: draft.overlayHeight
+                        .clamp(minimumSize.height, maximumHeight)
+                        .toDouble(),
+                  ),
+                ),
                 child: const Text('保存'),
               ),
             ],
@@ -153,6 +181,26 @@ Future<GameOverlaySettings?> showGameOverlaySettingsDialog(
       );
     },
   );
+}
+
+/// Pixel step used by the overlay size sliders.
+///
+/// `divisions` of one pixel means thousands of stops on a large display, which
+/// makes keyboard nudging and fine dragging useless. Aim at roughly a hundred
+/// stops and round up to a step a human can reason about.
+double _overlaySizeStep(double minimum, double maximum) {
+  const targetStops = 100;
+  final raw = math.max(1.0, (maximum - minimum) / targetStops);
+  for (final step in const <double>[1, 2, 4, 5, 8, 10, 16, 20, 25, 50]) {
+    if (raw <= step) {
+      return step;
+    }
+  }
+  return 50;
+}
+
+int _overlaySizeDivisions(double minimum, double maximum, double step) {
+  return math.max(1, ((maximum - minimum) / step).round());
 }
 
 class _SettingSlider extends StatelessWidget {

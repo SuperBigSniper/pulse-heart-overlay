@@ -36,47 +36,47 @@ class GameOverlayPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, child) {
-        final bpm = controller.currentBpm;
-        final active =
-            controller.hasReading &&
-            (!controller.readingIsStale || controller.isDemo);
-
-        return Material(
-          color: Colors.transparent,
-          child: CallbackShortcuts(
-            bindings: {
-              const SingleActivator(LogicalKeyboardKey.escape): onRestore,
-            },
-            child: Focus(
-              autofocus: true,
-              child: Semantics(
-                label: bpm == null ? '等待心率数据' : '当前心率 $bpm 次每分钟',
-                hint: '双击恢复完整界面，拖动四角缩放',
-                child: Listener(
-                  onPointerSignal: (event) {
-                    if (event is PointerScrollEvent) {
-                      onScale(-event.scrollDelta.dy * 0.25);
-                    }
-                  },
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Positioned.fill(
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onDoubleTap: onRestore,
-                          onPanStart: (_) => onStartDragging(),
-                          child: MouseRegion(
-                            cursor: SystemMouseCursors.move,
-                            child: LayoutBuilder(
-                              builder: (context, constraints) {
-                                final size = math.min(
-                                  constraints.maxWidth,
-                                  constraints.maxHeight,
-                                );
+    return Material(
+      color: Colors.transparent,
+      child: CallbackShortcuts(
+        bindings: {const SingleActivator(LogicalKeyboardKey.escape): onRestore},
+        child: Focus(
+          autofocus: true,
+          child: Semantics(
+            label: '游戏角落模式',
+            hint: '双击恢复完整界面，拖动四角缩放',
+            child: Listener(
+              onPointerSignal: (event) {
+                if (event is PointerScrollEvent) {
+                  onScale(-event.scrollDelta.dy * 0.25);
+                }
+              },
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onDoubleTap: onRestore,
+                      onPanStart: (_) => onStartDragging(),
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.move,
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final size = math.min(
+                              constraints.maxWidth,
+                              constraints.maxHeight,
+                            );
+                            return AnimatedBuilder(
+                              animation: Listenable.merge([
+                                controller.readingChanges,
+                                controller.connectionChanges,
+                              ]),
+                              builder: (context, child) {
+                                final active =
+                                    controller.hasReading &&
+                                    (!controller.readingIsStale ||
+                                        controller.isDemo);
                                 return _OverlayHeartRateView(
                                   controller: controller,
                                   active: active,
@@ -88,24 +88,24 @@ class GameOverlayPage extends StatelessWidget {
                                   settings: settings,
                                 );
                               },
-                            ),
-                          ),
+                            );
+                          },
                         ),
                       ),
-                      for (final corner in OverlayResizeCorner.values)
-                        _OverlayResizeHandle(
-                          corner: corner,
-                          onStart: () => onResizeStart(corner),
-                          onUpdate: (delta) => onResize(corner, delta),
-                        ),
-                    ],
+                    ),
                   ),
-                ),
+                  for (final corner in OverlayResizeCorner.values)
+                    _OverlayResizeHandle(
+                      corner: corner,
+                      onStart: () => onResizeStart(corner),
+                      onUpdate: (delta) => onResize(corner, delta),
+                    ),
+                ],
               ),
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 }
@@ -216,11 +216,10 @@ class _OverlayHeartRateView extends StatelessWidget {
                   canvasSize.height)
               .clamp(0.15, 0.85)
               .toDouble();
-    final shadow = Shadow(
-      color: AppColors.ink.withValues(alpha: 0.92),
-      blurRadius: math.max(6, size * 0.045),
-      offset: const Offset(0, 1),
-    );
+    // 浮层文字可读性用"描边式阴影"：四方向小偏移 + 小模糊，紧贴字形。
+    // 之前的大模糊重阴影（blur ~6、alpha 0.92）在小字号下会让相邻字形的
+    // 阴影互相融合成一整块灰底，看起来就像文字带了个边框。
+    final textShadows = _overlayTextShadows(numberSize);
 
     return HeartbeatMotion(
       beatsPerMinute: bpm,
@@ -273,7 +272,7 @@ class _OverlayHeartRateView extends StatelessWidget {
                           fontWeight: FontWeight.w700,
                           letterSpacing: 0,
                           fontFeatures: const [FontFeature.tabularFigures()],
-                          shadows: [shadow],
+                          shadows: textShadows,
                         ),
                       ),
                     ),
@@ -287,7 +286,7 @@ class _OverlayHeartRateView extends StatelessWidget {
                         fontSize: unitSize,
                         fontWeight: FontWeight.w700,
                         letterSpacing: 0,
-                        shadows: [shadow],
+                        shadows: _overlayTextShadows(unitSize),
                       ),
                     ),
                   ],
@@ -299,6 +298,25 @@ class _OverlayHeartRateView extends StatelessWidget {
       },
     );
   }
+}
+
+/// 游戏浮层文字的描边式阴影：四方向偏移贴出字形轮廓，叠一层轻微下投影。
+/// 描边宽度随字号等比缩放，窗口放大后不会出现糊成色块的大模糊阴影。
+List<Shadow> _overlayTextShadows(double fontSize) {
+  final stroke = math.max(1.0, fontSize * 0.055);
+  final blur = stroke * 1.2;
+  final outline = AppColors.ink.withValues(alpha: 0.8);
+  return [
+    Shadow(color: outline, offset: Offset(-stroke, 0), blurRadius: blur),
+    Shadow(color: outline, offset: Offset(stroke, 0), blurRadius: blur),
+    Shadow(color: outline, offset: Offset(0, -stroke), blurRadius: blur),
+    Shadow(color: outline, offset: Offset(0, stroke), blurRadius: blur),
+    Shadow(
+      color: AppColors.ink.withValues(alpha: 0.3),
+      offset: Offset(0, stroke),
+      blurRadius: stroke * 2,
+    ),
+  ];
 }
 
 class _OverlayResizeHandle extends StatefulWidget {

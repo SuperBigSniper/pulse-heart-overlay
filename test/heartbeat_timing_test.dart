@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:heartbeat_monitor/src/heart_rate/heart_rate_controller.dart';
 import 'package:heartbeat_monitor/src/heart_rate/heartbeat_timing.dart';
 import 'package:heartbeat_monitor/src/widgets/heartbeat_visualizer.dart';
 
@@ -133,5 +134,32 @@ void main() {
     expect(fastProgress, greaterThan(slowProgress));
 
     bpm.dispose();
+  });
+
+  testWidgets('live readings do not notify connection and history widgets', (
+    tester,
+  ) async {
+    final controller = HeartRateController();
+    await controller.toggleDemo();
+    final connectionRevision = controller.connectionChanges.value;
+    final readingRevision = controller.readingChanges.value;
+    final historyRevision = controller.savedHistoryChanges.value;
+
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(controller.connectionChanges.value, connectionRevision);
+    expect(controller.readingChanges.value, greaterThan(readingRevision));
+    expect(controller.savedHistoryChanges.value, historyRevision);
+
+    controller.pauseLiveUiNotifications();
+    final pausedReadingRevision = controller.readingChanges.value;
+    await tester.pump(const Duration(seconds: 2));
+    expect(controller.readingChanges.value, pausedReadingRevision);
+    controller.resumeLiveUiNotifications();
+    await tester.pump();
+    expect(controller.readingChanges.value, greaterThan(pausedReadingRevision));
+
+    await controller.toggleDemo();
+    controller.dispose();
   });
 }

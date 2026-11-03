@@ -27,6 +27,7 @@ class HeartbeatMotion extends StatefulWidget {
 class _HeartbeatMotionState extends State<HeartbeatMotion>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  late final FrameLimitedAnimation _limitedAnimation;
 
   Duration get _duration {
     if (!widget.active) {
@@ -42,7 +43,11 @@ class _HeartbeatMotionState extends State<HeartbeatMotion>
   void initState() {
     super.initState();
     _controller = AnimationController(vsync: this, duration: _duration)
-      ..repeat();
+      ..value = 0;
+    _limitedAnimation = FrameLimitedAnimation(_controller);
+    if (widget.active) {
+      _controller.repeat();
+    }
   }
 
   @override
@@ -57,18 +62,106 @@ class _HeartbeatMotionState extends State<HeartbeatMotion>
 
   void _restartWithCurrentPhase() {
     _controller.duration = _duration;
-    _controller.repeat(period: _duration);
+    if (widget.active) {
+      _controller.repeat(period: _duration);
+    } else {
+      _controller.stop();
+    }
   }
 
   @override
   void dispose() {
+    _limitedAnimation.dispose();
     _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return widget.builder(context, _controller);
+    return widget.builder(context, _limitedAnimation);
+  }
+}
+
+/// [AnimationController] 的轻量代理，向下游隐藏具体 controller 实现。
+///
+/// 注意：不要在这里做降帧（限 maxFPS）。AnimationController 本身是 vsync
+/// 驱动的，每帧只回调一次；在高刷屏（120Hz）上限帧会让动画每两帧才更新
+/// 一次，产生明显 judder；帧时间戳抖动还会造成不规律丢帧。保持每帧透传
+/// 即可跟随屏幕刷新率，绘制成本由 RepaintBoundary 控制。
+class FrameLimitedAnimation extends Animation<double> {
+  FrameLimitedAnimation(this._parent)
+    : _value = _parent.value {
+    _status = _parent.status;
+    _parent.addListener(_handleParentValue);
+    _parent.addStatusListener(_handleParentStatus);
+  }
+
+  final Animation<double> _parent;
+  final Set<VoidCallback> _listeners = <VoidCallback>{};
+  final Set<AnimationStatusListener> _statusListeners =
+      <AnimationStatusListener>{};
+
+  late double _value;
+  AnimationStatus _status = AnimationStatus.forward;
+  bool _disposed = false;
+
+  @override
+  double get value => _value;
+
+  @override
+  AnimationStatus get status => _status;
+
+  @override
+  void addListener(VoidCallback listener) {
+    _listeners.add(listener);
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    _listeners.remove(listener);
+  }
+
+  @override
+  void addStatusListener(AnimationStatusListener listener) {
+    _statusListeners.add(listener);
+  }
+
+  @override
+  void removeStatusListener(AnimationStatusListener listener) {
+    _statusListeners.remove(listener);
+  }
+
+  void _handleParentValue() {
+    if (_disposed) {
+      return;
+    }
+    _emitValue();
+  }
+
+  void _handleParentStatus(AnimationStatus status) {
+    if (_disposed || status == _status) {
+      return;
+    }
+    _status = status;
+    _emitValue();
+    for (final listener in List<AnimationStatusListener>.of(_statusListeners)) {
+      listener(status);
+    }
+  }
+
+  void _emitValue() {
+    _value = _parent.value;
+    for (final listener in List<VoidCallback>.of(_listeners)) {
+      listener();
+    }
+  }
+
+  void dispose() {
+    _disposed = true;
+    _parent.removeListener(_handleParentValue);
+    _parent.removeStatusListener(_handleParentStatus);
+    _listeners.clear();
+    _statusListeners.clear();
   }
 }
 
@@ -101,13 +194,17 @@ class HeartbeatVisualizer extends StatefulWidget {
 class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  late final FrameLimitedAnimation _limitedController;
 
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(vsync: this, duration: _duration);
+    _limitedController = FrameLimitedAnimation(_controller);
     if (widget.animation == null) {
-      _controller.repeat();
+      if (widget.active) {
+        _controller.repeat();
+      }
     }
   }
 
@@ -144,18 +241,23 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
 
   void _restartWithCurrentPhase() {
     _controller.duration = _duration;
-    _controller.repeat(period: _duration);
+    if (widget.active) {
+      _controller.repeat(period: _duration);
+    } else {
+      _controller.stop();
+    }
   }
 
   @override
   void dispose() {
+    _limitedController.dispose();
     _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final animation = widget.animation ?? _controller;
+    final animation = widget.animation ?? _limitedController;
     return Semantics(
       label: widget.active && widget.beatsPerMinute != null
           ? '当前心率 ${widget.beatsPerMinute} 次每分钟'
@@ -222,11 +324,13 @@ class _HeartbeatPainter extends CustomPainter {
     canvas.scale(scale);
     canvas.translate(-center.dx, -center.dy);
     if (showShadow) {
-      canvas.drawShadow(
-        heartPath,
-        accent.withValues(alpha: active ? 0.40 : 0.16),
-        active ? 20 : 10,
-        true,
+      canvas.drawPath(
+        heartPath.shift(Offset(0, radius * (active ? 0.045 : 0.025))),
+        Paint()..color = accent.withValues(alpha: active ? 0.12 : 0.06),
+      );
+      canvas.drawPath(
+        heartPath.shift(Offset(0, radius * 0.018)),
+        Paint()..color = AppColors.ink.withValues(alpha: 0.05),
       );
     }
     canvas.drawPath(heartPath, Paint()..color = accent);
@@ -380,24 +484,33 @@ class EcgLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: animation,
-      builder: (context, child) {
-        return CustomPaint(
-          painter: _EcgPainter(
-            progress: animation.value,
-            strength: heartbeatStrengthFor(beatsPerMinute),
-            active: active,
-            color: color,
-            verticalAlignment: verticalAlignment,
-          ),
-        );
-      },
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: animation,
+        builder: (context, child) {
+          return CustomPaint(
+            painter: _EcgPainter(
+              progress: animation.value,
+              strength: heartbeatStrengthFor(beatsPerMinute),
+              active: active,
+              color: color,
+              verticalAlignment: verticalAlignment,
+            ),
+          );
+        },
+      ),
     );
   }
 }
 
 class _EcgPainter extends CustomPainter {
+  static const _sampleCount = 180;
+  static final List<double> _waveform = List<double>.generate(
+    _sampleCount + 1,
+    (index) => _ecgValue(index / _sampleCount),
+    growable: false,
+  );
+
   _EcgPainter({
     required this.progress,
     required this.strength,
@@ -415,16 +528,31 @@ class _EcgPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final centerY = size.height * verticalAlignment;
-    final path = Path();
-    final impulse = active ? heartbeatImpulse(progress) : 0.0;
-    final waveScale = 1.0 + impulse * strength * 1.8;
-    const sampleCount = 180;
+    final baselinePaint = Paint()
+      ..color = AppColors.ink.withValues(alpha: active ? 0.08 : 0.05)
+      ..strokeWidth = 1;
+    canvas.drawLine(
+      Offset(0, centerY),
+      Offset(size.width, centerY),
+      baselinePaint,
+    );
+    if (!active) {
+      return;
+    }
 
-    for (var index = 0; index <= sampleCount; index++) {
-      final horizontalFraction = index / sampleCount;
+    final path = Path();
+    final impulse = heartbeatImpulse(progress);
+    final waveScale = 1.0 + impulse * strength * 1.8;
+
+    for (var index = 0; index <= _sampleCount; index++) {
+      final horizontalFraction = index / _sampleCount;
       final x = horizontalFraction * size.width;
       final cycle = ecgCycleFor(horizontalFraction, progress);
-      final value = active ? _ecgValue(cycle) : 0.0;
+      final sampleIndex = (cycle * _sampleCount)
+          .round()
+          .clamp(0, _sampleCount)
+          .toInt();
+      final value = _waveform[sampleIndex];
       final y = centerY - value * size.height * 0.21 * waveScale;
       if (index == 0) {
         path.moveTo(x, y);
@@ -433,14 +561,7 @@ class _EcgPainter extends CustomPainter {
       }
     }
 
-    canvas.drawLine(
-      Offset(0, centerY),
-      Offset(size.width, centerY),
-      Paint()
-        ..color = AppColors.ink.withValues(alpha: 0.08)
-        ..strokeWidth = 1,
-    );
-    if (active && impulse > 0.01) {
+    if (impulse > 0.01) {
       canvas.drawPath(
         path,
         Paint()
@@ -448,24 +569,21 @@ class _EcgPainter extends CustomPainter {
           ..strokeWidth = 7
           ..strokeCap = StrokeCap.round
           ..strokeJoin = StrokeJoin.round
-          ..color = color.withValues(alpha: impulse * (0.08 + strength * 0.6))
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+          ..color = color.withValues(alpha: impulse * (0.08 + strength * 0.6)),
       );
     }
     canvas.drawPath(
       path,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = active ? 2.8 + impulse * strength * 8 : 2
+        ..strokeWidth = 2.8 + impulse * strength * 8
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
-        ..color = color.withValues(
-          alpha: active ? 0.54 + impulse * 0.26 : 0.20,
-        ),
+        ..color = color.withValues(alpha: 0.54 + impulse * 0.26),
     );
   }
 
-  double _ecgValue(double t) {
+  static double _ecgValue(double t) {
     final pWave = _bump(t, 0.08, 0.025, 0.18);
     final qWave = _bump(t, 0.205, 0.012, -0.35);
     final rWave = _bump(t, 0.235, 0.012, 1.0);
@@ -474,7 +592,12 @@ class _EcgPainter extends CustomPainter {
     return pWave + qWave + rWave + sWave + tWave;
   }
 
-  double _bump(double value, double center, double width, double height) {
+  static double _bump(
+    double value,
+    double center,
+    double width,
+    double height,
+  ) {
     final distance = (value - center) / width;
     return math.exp(-0.5 * distance * distance) * height;
   }

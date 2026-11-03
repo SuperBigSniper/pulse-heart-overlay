@@ -8,6 +8,8 @@ class GameOverlaySettings {
     this.animationSpeed = 1,
     this.overlayWidth = 90,
     this.overlayHeight = 120,
+    this.overlayLeft,
+    this.overlayTop,
   });
 
   static const defaults = GameOverlaySettings();
@@ -18,12 +20,19 @@ class GameOverlaySettings {
   final double overlayWidth;
   final double overlayHeight;
 
+  /// 上次角落模式窗口的左上角位置；null 表示从未记录过，
+  /// 进入角落模式时回退到默认的右上角偏移。
+  final double? overlayLeft;
+  final double? overlayTop;
+
   GameOverlaySettings copyWith({
     double? animationScale,
     double? textScale,
     double? animationSpeed,
     double? overlayWidth,
     double? overlayHeight,
+    double? overlayLeft,
+    double? overlayTop,
   }) {
     return GameOverlaySettings(
       animationScale: animationScale ?? this.animationScale,
@@ -31,6 +40,8 @@ class GameOverlaySettings {
       animationSpeed: animationSpeed ?? this.animationSpeed,
       overlayWidth: overlayWidth ?? this.overlayWidth,
       overlayHeight: overlayHeight ?? this.overlayHeight,
+      overlayLeft: overlayLeft ?? this.overlayLeft,
+      overlayTop: overlayTop ?? this.overlayTop,
     );
   }
 
@@ -41,7 +52,9 @@ class GameOverlaySettings {
         other.textScale == textScale &&
         other.animationSpeed == animationSpeed &&
         other.overlayWidth == overlayWidth &&
-        other.overlayHeight == overlayHeight;
+        other.overlayHeight == overlayHeight &&
+        other.overlayLeft == overlayLeft &&
+        other.overlayTop == overlayTop;
   }
 
   @override
@@ -51,5 +64,7 @@ class GameOverlaySettings {
     animationSpeed,
     overlayWidth,
     overlayHeight,
+    overlayLeft,
+    overlayTop,
   );
 }
