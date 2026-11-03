@@ -30,6 +30,48 @@
 私有蓝牙协议的手环不能由通用扫描直接读取，需要按具体品牌和型号补充协议
 实现。
 
+## 工作原理
+
+两端共用 Dart 侧的扫描、缓存、设备选择、心率帧解析、历史记录、断线重试和
+持久化逻辑，差异集中在 GATT 建链方式。
+
+### 公共流程
+
+1. 使用 `universal_ble` 扫描广播，在 Dart 层筛选广播 `0x180D`、心率服务
+   数据或小米厂商数据的设备，避免系统级服务过滤漏掉设备。
+2. 选中设备后持续扫描，并从 `0x180D` 服务数据或小米厂商数据中尝试读取
+   BPM。这样，只发送心率广播的设备无需建立 GATT 也能工作。
+3. 同时尝试连接标准 Heart Rate Profile，发现 `0x180D` 服务和 `0x2A37`
+   测量特征，并优先启用 Notify；Notify 失败时自动改用 Indicate。
+4. 广告数据和 `0x2A37` 通知都进入同一个帧解析器，统一生成 BPM、传感器
+   接触状态和 R-R 间期。
+5. GATT 断开后按 2、4、8、16、32、60 秒退避重连；连接建立期间继续依靠
+   广告数据，避免界面停止刷新。
+6. 断开后把手环加入搜索页的“上次设备”。部分手环断开后暂不恢复广播，
+   此时可直接对已知设备发起 GATT 重连，无需重新开关手环广播。
+7. 演示模式保留现有 BLE 会话，只忽略演示期间的真实读数；结束演示后恢复
+   原设备的广播或 GATT 通知。
+
+### macOS
+
+macOS 使用 `universal_ble` 的 CoreBluetooth 实现完成扫描、连接、服务发现
+和特征订阅。连接成功后先尝试 Notify，失败时通过同一插件订阅 Indicate。
+应用需要 `NSBluetoothAlwaysUsageDescription` 和蓝牙沙盒 entitlement，首次
+访问时由系统请求蓝牙权限。
+
+### Windows
+
+Windows 的扫描仍使用 `universal_ble`，但 GATT 连接由
+`windows/runner/heart_rate_channel.cpp` 通过 WinRT 完成。原生代码只查询
+`0x180D` 和 `0x2A37`，不会枚举手环受保护的 HID 服务 `0x1812`，从而避免
+因枚举该服务而触发系统绑定或 `AccessDenied`。原生层将连接状态和测量字节
+通过 `pulse/heart_rate` MethodChannel 发送给 Dart，随后与 macOS 共用同一
+套解析和会话逻辑。
+
+Windows 原生订阅优先写 Notify CCCD；Notify 不可用或写入失败时改试 Indicate。
+停止接收或切换设备会先释放旧 GATT 会话，并递增原生订阅代次，使尚未完成的
+旧连接回调失效，防止旧设备稍后把连接状态或测量数据写回当前会话。
+
 ## 环境
 
 项目使用 Flutter 稳定版 `3.47.9` 和 Dart `3.13.7`。当前机器上的 SDK 位于：
@@ -46,6 +88,11 @@ export PATH="$HOME/development/flutter/bin:$PATH"
 
 macOS 需要 Xcode 及蓝牙权限。Windows 需要 Visual Studio 2022 的
 “Desktop development with C++”工作负载和 Windows 10/11 SDK。
+
+当前通过 `dependency_overrides` 将 `shared_preferences_foundation` 锁定为
+`2.5.7`，以兼容 Xcode 15.3 / Swift 5.10。`2.6.x` 生成的 Swift 代码使用了
+该工具链尚不支持的尾随逗号；全部开发环境升级到兼容的 Xcode 后可重新评估
+这个锁定。
 
 ## 运行
 

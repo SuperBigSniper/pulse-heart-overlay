@@ -291,18 +291,60 @@ winrt::fire_and_forget HeartRateChannel::SubscribeAsync(
     }
     auto characteristic = characteristics.GetAt(0);
 
-    const auto cccd_status =
-        co_await characteristic
-            .WriteClientCharacteristicConfigurationDescriptorAsync(
-                winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
-                    GattClientCharacteristicConfigurationDescriptorValue::
-                        Notify);
-    if (cccd_status !=
+    const auto properties = characteristic.CharacteristicProperties();
+    const bool supports_notify =
+        (properties &
+         winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
+             GattCharacteristicProperties::Notify) !=
         winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
-            GattCommunicationStatus::Success) {
+            GattCharacteristicProperties::None;
+    const bool supports_indicate =
+        (properties &
+         winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
+             GattCharacteristicProperties::Indicate) !=
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
+            GattCharacteristicProperties::None;
+    if (!supports_notify && !supports_indicate) {
       notify_current("error",
-                     "Enabling notifications failed: " +
-                         GattStatusText(cccd_status));
+                     "0x2A37 does not support notify or indicate");
+      co_return;
+    }
+
+    using GattCommunicationStatus =
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
+            GattCommunicationStatus;
+    using GattClientCharacteristicConfigurationDescriptorValue =
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
+            GattClientCharacteristicConfigurationDescriptorValue;
+
+    GattCommunicationStatus cccd_status = GattCommunicationStatus::Unreachable;
+    std::string subscription_mode;
+    if (supports_notify) {
+      cccd_status =
+          co_await characteristic
+              .WriteClientCharacteristicConfigurationDescriptorAsync(
+                  GattClientCharacteristicConfigurationDescriptorValue::
+                      Notify);
+      subscription_mode = "notify";
+    }
+
+    // Some devices advertise Notify but only accept Indicate in practice.
+    if (cccd_status != GattCommunicationStatus::Success &&
+        supports_indicate) {
+      cccd_status =
+          co_await characteristic
+              .WriteClientCharacteristicConfigurationDescriptorAsync(
+                  GattClientCharacteristicConfigurationDescriptorValue::
+                      Indicate);
+      subscription_mode = "indicate";
+    }
+    if (cccd_status != GattCommunicationStatus::Success) {
+      notify_current(
+          "error",
+          "Enabling heart-rate " +
+              (subscription_mode.empty() ? std::string("subscription")
+                                         : subscription_mode) +
+              " failed: " + GattStatusText(cccd_status));
       co_return;
     }
 
@@ -316,17 +358,19 @@ winrt::fire_and_forget HeartRateChannel::SubscribeAsync(
       self->device_ = device;
       self->measurement_ = characteristic;
       self->value_changed_token_ = characteristic.ValueChanged(
-          [self](const winrt::Windows::Devices::Bluetooth::
-                     GenericAttributeProfile::GattCharacteristic& sender,
-                 const winrt::Windows::Devices::Bluetooth::
-                     GenericAttributeProfile::GattValueChangedEventArgs& args) {
-            self->OnValueChanged(sender, args);
+          [self, generation](
+              const winrt::Windows::Devices::Bluetooth::
+                  GenericAttributeProfile::GattCharacteristic& sender,
+              const winrt::Windows::Devices::Bluetooth::
+                  GenericAttributeProfile::GattValueChangedEventArgs& args) {
+            self->OnValueChanged(sender, args, generation);
           });
       self->connection_status_token_ = device.ConnectionStatusChanged(
-          [self](const winrt::Windows::Devices::Bluetooth::BluetoothLEDevice&
-                     sender,
-                 const winrt::Windows::Foundation::IInspectable& args) {
-            self->OnConnectionStatusChanged(sender, args);
+          [self, generation](
+              const winrt::Windows::Devices::Bluetooth::BluetoothLEDevice&
+                  sender,
+              const winrt::Windows::Foundation::IInspectable& args) {
+            self->OnConnectionStatusChanged(sender, args, generation);
           });
       self->subscribed_ = true;
     }
@@ -342,12 +386,16 @@ void HeartRateChannel::OnValueChanged(
     const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
         GattCharacteristic& sender,
     const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
-        GattValueChangedEventArgs& args) {
+        GattValueChangedEventArgs& args,
+    std::uint64_t generation) {
+  if (!IsGenerationCurrent(generation)) {
+    return;
+  }
   const auto buffer = args.CharacteristicValue();
   std::vector<std::uint8_t> bytes(buffer.data(),
                                   buffer.data() + buffer.Length());
-  PostToUiThread([this, bytes = std::move(bytes)]() {
-    if (bytes.empty()) {
+  PostToUiThread([this, generation, bytes = std::move(bytes)]() {
+    if (bytes.empty() || !IsGenerationCurrent(generation)) {
       return;
     }
     NotifyValue(bytes);
@@ -356,12 +404,23 @@ void HeartRateChannel::OnValueChanged(
 
 void HeartRateChannel::OnConnectionStatusChanged(
     const winrt::Windows::Devices::Bluetooth::BluetoothLEDevice& sender,
-    const winrt::Windows::Foundation::IInspectable& /*args*/) {
+    const winrt::Windows::Foundation::IInspectable& /*args*/,
+    std::uint64_t generation) {
   if (sender.ConnectionStatus() ==
       winrt::Windows::Devices::Bluetooth::BluetoothConnectionStatus::
-          Disconnected) {
-    PostToUiThread([this]() { NotifyState("disconnected", ""); });
+          Disconnected &&
+      IsGenerationCurrent(generation)) {
+    PostToUiThread([this, generation]() {
+      if (IsGenerationCurrent(generation)) {
+        NotifyState("disconnected", "");
+      }
+    });
   }
+}
+
+bool HeartRateChannel::IsGenerationCurrent(std::uint64_t generation) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return generation == subscribe_generation_;
 }
 
 void HeartRateChannel::NotifyState(const std::string& state,
@@ -396,6 +455,10 @@ void HeartRateChannel::Unsubscribe() {
   winrt::Windows::Devices::Bluetooth::BluetoothLEDevice device{nullptr};
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    // Always invalidate an in-flight SubscribeAsync, even before it has
+    // reached the subscribed state.
+    ++subscribe_generation_;
+    address_ = 0;
     if (!subscribed_) {
       return;
     }
@@ -404,7 +467,6 @@ void HeartRateChannel::Unsubscribe() {
     device = device_;
     measurement_ = {nullptr};
     device_ = {nullptr};
-    address_ = 0;
   }
   // Unregister outside the lock: WinRT may wait for in-flight handlers that
   // take the same mutex.

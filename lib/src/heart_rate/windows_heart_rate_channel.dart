@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 
@@ -7,12 +6,11 @@ import 'package:flutter/services.dart';
 enum WindowsHeartLinkState { connecting, ready, disconnected, error }
 
 class WindowsHeartLinkEvent {
-  const WindowsHeartLinkEvent.state(this.state, this.detail)
-      : bytes = null;
+  const WindowsHeartLinkEvent.state(this.state, this.detail) : bytes = null;
 
   const WindowsHeartLinkEvent.value(Uint8List this.bytes)
-      : state = null,
-        detail = null;
+    : state = null,
+      detail = null;
 
   final WindowsHeartLinkState? state;
   final String? detail;
@@ -24,7 +22,7 @@ class WindowsHeartLinkEvent {
 ///
 /// The native side scopes GATT discovery to the heart rate service
 /// (0x180D/0x2A37) only, so the band's protected HID service is never
-/// enumerated and no system pairing is required.
+/// enumerated. This avoids requiring bonding merely to enumerate HID.
 class WindowsHeartRateChannel {
   static const MethodChannel _channel = MethodChannel('pulse/heart_rate');
 

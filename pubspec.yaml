@@ -48,6 +48,10 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+dependency_overrides:
+  # 2.6.x generates Swift with trailing commas that Xcode 15.3 cannot parse.
+  shared_preferences_foundation: 2.5.7
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

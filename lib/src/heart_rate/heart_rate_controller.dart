@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import 'heart_rate_measurement.dart';
+import 'heart_rate_subscription.dart';
 import 'windows_heart_rate_channel.dart';
 
 enum MonitorStatus { idle, receiving, error }
@@ -26,12 +27,14 @@ class HeartRateSample {
   final DateTime recordedAt;
 }
 
-/// Receives heart rate from the band's "workout heart rate broadcast".
+/// Receives heart rate from advertisements and the standard Heart Rate
+/// Profile.
 ///
-/// The band includes its current BPM directly in the advertising payload, so
-/// no GATT connection and no pairing is involved: the controller only scans
-/// and parses advertisements from the selected device. This keeps Windows,
-/// macOS and Linux on the exact same code path.
+/// Scanning and measurement parsing are shared by desktop platforms. When the
+/// selected device exposes 0x180D, the controller also opens a GATT session and
+/// subscribes to 0x2A37. Windows hands that GATT session to the runner because
+/// its native implementation can scope service discovery to the heart-rate
+/// service; macOS uses universal_ble's CoreBluetooth-backed implementation.
 class HeartRateController extends ChangeNotifier {
   static const heartRateServiceUuid = '180d';
   static const heartRateMeasurementUuid = '2a37';
@@ -49,6 +52,7 @@ class HeartRateController extends ChangeNotifier {
   /// regularly exceeds 12s, so keep a generous ceiling.
   static const _gattConnectTimeout = Duration(seconds: 30);
   static const _pairingTimeout = Duration(seconds: 30);
+  static const _gattDisconnectTimeout = Duration(seconds: 8);
   static const _gattRetryMinimum = Duration(seconds: 2);
   static const _gattRetryMaximum = Duration(seconds: 60);
 
@@ -57,10 +61,10 @@ class HeartRateController extends ChangeNotifier {
 
   /// Windows uses the runner's native heart rate channel, which scopes GATT
   /// discovery to 0x180D/0x2A37 and never touches the protected HID service.
-  static final bool _useWindowsHeartLink =
-      !kIsWeb && Platform.isWindows;
-  final WindowsHeartRateChannel? _windowsHeartLink =
-      _useWindowsHeartLink ? WindowsHeartRateChannel() : null;
+  static final bool _useWindowsHeartLink = !kIsWeb && Platform.isWindows;
+  final WindowsHeartRateChannel? _windowsHeartLink = _useWindowsHeartLink
+      ? WindowsHeartRateChannel()
+      : null;
   StreamSubscription<WindowsHeartLinkEvent>? _windowsLinkSubscription;
 
   StreamSubscription<AvailabilityState>? _availabilitySubscription;
@@ -74,6 +78,7 @@ class HeartRateController extends ChangeNotifier {
   Duration _gattRetryDelay = _gattRetryMinimum;
   bool _gattBusy = false;
   bool _gattConnected = false;
+  int _gattAttemptGeneration = 0;
   bool _pairingRequested = false;
   DateTime? _lastGattSkipLogAt;
   String _lastGattSkipReason = '';
@@ -93,6 +98,7 @@ class HeartRateController extends ChangeNotifier {
   bool? _sensorContactDetected;
   bool _initialized = false;
   bool _isScanning = false;
+  bool _scanHeartRateOnly = true;
   bool _isDemo = false;
   bool _disposed = false;
   int _demoTick = 0;
@@ -232,8 +238,7 @@ class HeartRateController extends ChangeNotifier {
     }
 
     await _refreshAvailability();
-    if (_lastDeviceId != null &&
-        _availability == AvailabilityState.poweredOn) {
+    if (_lastDeviceId != null && _availability == AvailabilityState.poweredOn) {
       // Restore the previous session hands-free: selecting the device is
       // enough, its broadcasts carry the readings.
       unawaited(selectDevice(lastDevice!));
@@ -249,6 +254,13 @@ class HeartRateController extends ChangeNotifier {
 
     _errorMessage = null;
     _scanResults.clear();
+    final rememberedDevice = lastDevice;
+    if (rememberedDevice != null) {
+      // Some bands stop advertising after a GATT disconnect. Keep the last
+      // device visible so it can still be reached by a direct GATT connection.
+      _scanResults[rememberedDevice.deviceId] = rememberedDevice;
+    }
+    _scanHeartRateOnly = heartRateOnly;
     _isScanning = true;
     _notify();
 
@@ -258,12 +270,10 @@ class HeartRateController extends ChangeNotifier {
         throw Exception(availabilityLabel);
       }
 
-      await UniversalBle.startScan(
-        scanFilter: heartRateOnly
-            ? ScanFilter(withServices: const [heartRateServiceUuid])
-            : null,
-        skipDuplicates: true,
-      );
+      // Scan without a platform service filter. Some bands stop advertising
+      // 0x180D after disconnect, and Xiaomi heart rate may only be present in
+      // manufacturer data. Filter candidates in Dart instead.
+      await UniversalBle.startScan(skipDuplicates: true);
 
       // Without a selected device the scan is dialog-driven and stops after
       // a window; with one selected it must run continuously.
@@ -298,14 +308,18 @@ class HeartRateController extends ChangeNotifier {
     }
   }
 
-  /// Starts listening to the given band's broadcasts. This replaces the old
-  /// GATT connect flow — nothing is "connected"; the band simply broadcasts.
+  /// Selects a band, starts persistent advertisement scanning, and opens the
+  /// standard Heart Rate Profile session when the band exposes it.
   Future<void> selectDevice(BleDevice device) async {
     if (_isDemo) {
       _stopDemo(notify: false);
     }
 
+    final previousDeviceId = _selectedDevice?.deviceId;
     await stopScan(notify: false);
+    if (previousDeviceId != null) {
+      await _releaseGattSession(previousDeviceId);
+    }
     _selectedDevice = device;
     _pairingRequested = false;
     _status = MonitorStatus.receiving;
@@ -324,8 +338,7 @@ class HeartRateController extends ChangeNotifier {
   /// Stops listening and clears the selection.
   Future<void> disconnect() async {
     if (_isDemo) {
-      _stopDemo();
-      return;
+      _stopDemo(notify: false);
     }
     if (_selectedDevice == null && _status != MonitorStatus.error) {
       return;
@@ -333,17 +346,8 @@ class HeartRateController extends ChangeNotifier {
 
     final deviceId = _selectedDevice?.deviceId;
     await stopScan(notify: false);
-    _gattRetryTimer?.cancel();
-    _gattRetryTimer = null;
-    _teardownGattSession();
+    await _releaseGattSession(deviceId);
     _pairingRequested = false;
-    if (deviceId != null) {
-      if (_useWindowsHeartLink) {
-        unawaited(_windowsHeartLink!.unsubscribe());
-      } else {
-        unawaited(_disconnectGatt(deviceId));
-      }
-    }
     _selectedDevice = null;
     _status = MonitorStatus.idle;
     _errorMessage = null;
@@ -354,10 +358,8 @@ class HeartRateController extends ChangeNotifier {
   Future<void> toggleDemo() async {
     if (_isDemo) {
       _stopDemo();
+      await _resumeSelectedDevice();
       return;
-    }
-    if (_selectedDevice != null) {
-      await disconnect();
     }
     _startDemo();
   }
@@ -413,20 +415,23 @@ class HeartRateController extends ChangeNotifier {
       return;
     }
     _gattBusy = true;
+    final generation = ++_gattAttemptGeneration;
     _lastGattSkipLogAt = null;
 
     // Windows: hand the whole GATT session to the runner's native channel.
     // It only enumerates 0x180D/0x2A37, so the protected HID service is never
-    // touched and pairing is not required. _gattBusy stays true until a
-    // ready/error event arrives.
+    // touched and bonding is not needed merely to enumerate HID. _gattBusy
+    // stays true until a ready/error event arrives.
     if (_useWindowsHeartLink) {
       _log('native gatt connect attempt for ${selected.deviceId}');
       try {
         await _windowsHeartLink!.subscribe(selected.deviceId);
       } on Object catch (error) {
-        _gattBusy = false;
-        _log('native subscribe failed: ${_readableError(error)}');
-        _scheduleGattRetry();
+        if (generation == _gattAttemptGeneration) {
+          _gattBusy = false;
+          _log('native subscribe failed: ${_readableError(error)}');
+          _scheduleGattRetry();
+        }
       }
       return;
     }
@@ -443,6 +448,9 @@ class HeartRateController extends ChangeNotifier {
         );
       } on Object catch (error) {
         final message = _readableError(error);
+        if (!_isCurrentGattAttempt(generation, selected.deviceId)) {
+          rethrow;
+        }
         // Windows: the band's protected HID service (1812) denies
         // characteristic enumeration until the device is bonded to the
         // OS, which aborts the plugin's connect-time service discovery.
@@ -454,10 +462,11 @@ class HeartRateController extends ChangeNotifier {
             'requesting system pairing — confirm the Windows prompt '
             'and the band screen if one appears',
           );
-          await UniversalBle.pair(
-            selected.deviceId,
-            timeout: _pairingTimeout,
-          );
+          await UniversalBle.pair(selected.deviceId, timeout: _pairingTimeout);
+          if (!_isCurrentGattAttempt(generation, selected.deviceId)) {
+            await _disconnectGatt(selected.deviceId);
+            return;
+          }
           _log('pairing done, retrying connect');
           await UniversalBle.connect(
             selected.deviceId,
@@ -467,7 +476,15 @@ class HeartRateController extends ChangeNotifier {
           rethrow;
         }
       }
+      if (!_isCurrentGattAttempt(generation, selected.deviceId)) {
+        await _disconnectGatt(selected.deviceId);
+        return;
+      }
       final services = await UniversalBle.discoverServices(selected.deviceId);
+      if (!_isCurrentGattAttempt(generation, selected.deviceId)) {
+        await _disconnectGatt(selected.deviceId);
+        return;
+      }
       BleService? heartRateService;
       BleCharacteristic? measurementCharacteristic;
       for (final service in services) {
@@ -492,26 +509,56 @@ class HeartRateController extends ChangeNotifier {
         throw Exception('手环未提供 180D/2A37 心率特征');
       }
 
-      await UniversalBle.subscribeNotifications(
-        selected.deviceId,
-        heartRateService.uuid,
-        measurementCharacteristic.uuid,
-      );
-      unawaited(_measurementSubscription?.cancel());
-      _measurementSubscription = UniversalBle.characteristicValueStream(
-        selected.deviceId,
-        measurementCharacteristic.uuid,
-      ).listen(
-        _handleMeasurementValue,
-        onError: (Object error) {
-          _log('measurement stream error: ${_readableError(error)}');
-          _scheduleGattRetry();
+      final serviceUuid = heartRateService.uuid;
+      final measurementUuid = measurementCharacteristic.uuid;
+      await subscribeNotifyThenIndicate(
+        subscribeNotify: () => UniversalBle.subscribeNotifications(
+          selected.deviceId,
+          serviceUuid,
+          measurementUuid,
+        ),
+        subscribeIndicate: () => UniversalBle.subscribeIndications(
+          selected.deviceId,
+          serviceUuid,
+          measurementUuid,
+        ),
+        onNotifyFailure: (error) {
+          _log(
+            'notify subscription failed, trying indications: '
+            '${_readableError(error)}',
+          );
         },
       );
+      if (!_isCurrentGattAttempt(generation, selected.deviceId)) {
+        await _disconnectGatt(selected.deviceId);
+        return;
+      }
+      unawaited(_measurementSubscription?.cancel());
+      _measurementSubscription =
+          UniversalBle.characteristicValueStream(
+            selected.deviceId,
+            measurementUuid,
+          ).listen(
+            (value) {
+              if (_isCurrentGattAttempt(generation, selected.deviceId)) {
+                _handleMeasurementValue(value);
+              }
+            },
+            onError: (Object error) {
+              if (_isCurrentGattAttempt(generation, selected.deviceId)) {
+                _log('measurement stream error: ${_readableError(error)}');
+                _scheduleGattRetry();
+              }
+            },
+          );
       unawaited(_gattConnectionSubscription?.cancel());
-      _gattConnectionSubscription = UniversalBle.connectionChangeStream(
-        selected.deviceId,
-      ).listen(_handleGattConnectionChange);
+      _gattConnectionSubscription =
+          UniversalBle.connectionChangeStream(selected.deviceId)
+              .listen((change) {
+                if (_isCurrentGattAttempt(generation, selected.deviceId)) {
+                  _handleGattConnectionChange(change);
+                }
+              });
 
       _gattConnected = true;
       _gattRetryDelay = _gattRetryMinimum;
@@ -521,10 +568,40 @@ class HeartRateController extends ChangeNotifier {
       _log('gatt session ready, listening on 2A37');
       _notify();
     } on Object catch (error) {
-      _log('gatt session failed: ${_readableError(error)}');
-      _scheduleGattRetry();
+      if (_isCurrentGattAttempt(generation, selected.deviceId)) {
+        _log('gatt session failed: ${_readableError(error)}');
+        _scheduleGattRetry();
+      }
     } finally {
-      _gattBusy = false;
+      if (generation == _gattAttemptGeneration) {
+        _gattBusy = false;
+      }
+    }
+  }
+
+  bool _isCurrentGattAttempt(int generation, String deviceId) {
+    return !_disposed &&
+        _selectedDevice?.deviceId == deviceId &&
+        generation == _gattAttemptGeneration;
+  }
+
+  Future<void> _releaseGattSession(String? deviceId) async {
+    _gattAttemptGeneration++;
+    _gattRetryTimer?.cancel();
+    _gattRetryTimer = null;
+    _gattBusy = false;
+    _teardownGattSession();
+    if (deviceId == null) {
+      return;
+    }
+    if (_useWindowsHeartLink) {
+      try {
+        await _windowsHeartLink!.unsubscribe();
+      } on Object catch (error) {
+        _log('native unsubscribe failed: ${_readableError(error)}');
+      }
+    } else {
+      await _disconnectGatt(deviceId);
     }
   }
 
@@ -545,7 +622,8 @@ class HeartRateController extends ChangeNotifier {
     } else if (_gattConnected) {
       reason = 'already connected';
     } else if (_gattRetryTimer?.isActive == true) {
-      reason = 'retry backoff active (next attempt within '
+      reason =
+          'retry backoff active (next attempt within '
           '${_gattRetryDelay.inSeconds}s)';
     } else if (_availability != AvailabilityState.poweredOn) {
       reason = 'bluetooth not ready';
@@ -567,6 +645,9 @@ class HeartRateController extends ChangeNotifier {
 
   /// Events from the runner's native heart rate channel (Windows only).
   void _handleWindowsLinkEvent(WindowsHeartLinkEvent event) {
+    if (_selectedDevice == null) {
+      return;
+    }
     final bytes = event.bytes;
     if (bytes != null) {
       _handleMeasurementValue(bytes);
@@ -623,6 +704,9 @@ class HeartRateController extends ChangeNotifier {
   }
 
   void _handleMeasurementValue(Uint8List value) {
+    if (_isDemo) {
+      return;
+    }
     final measurement = HeartRateMeasurement.tryParse(value);
     if (measurement == null) {
       _log('unparsed measurement notification: ${_hexOf(value)}');
@@ -659,9 +743,10 @@ class HeartRateController extends ChangeNotifier {
 
   Future<void> _disconnectGatt(String deviceId) async {
     try {
-      await UniversalBle.disconnect(deviceId, timeout: const Duration(seconds: 3));
-    } on Object {
+      await UniversalBle.disconnect(deviceId, timeout: _gattDisconnectTimeout);
+    } on Object catch (error) {
       // The link may already be gone; nothing to recover.
+      _log('gatt disconnect failed: ${_readableError(error)}');
     }
   }
 
@@ -701,7 +786,9 @@ class HeartRateController extends ChangeNotifier {
         _processAdvertisement(device);
         // Fresh advertisement means the band is reachable: (re)open the
         // GATT session unless one is already up or backing off.
-        unawaited(_ensureGattSession());
+        if (!_isDemo) {
+          unawaited(_ensureGattSession());
+        }
       }
     } else {
       _processAdvertisement(device);
@@ -754,10 +841,9 @@ class HeartRateController extends ChangeNotifier {
 
   void _addScanResult(BleDevice device) {
     final selected = _selectedDevice;
-    final isRelevant =
-        selected == null ||
-        device.deviceId == selected.deviceId ||
-        _advertisesHeartRate(device);
+    final isRelevant = selected == null
+        ? !_scanHeartRateOnly || isHeartRateCandidate(device)
+        : device.deviceId == selected.deviceId || _advertisesHeartRate(device);
     if (!isRelevant) {
       return;
     }
@@ -774,6 +860,9 @@ class HeartRateController extends ChangeNotifier {
   }
 
   void _processAdvertisement(BleDevice device) {
+    if (_isDemo) {
+      return;
+    }
     final measurement = _extractMeasurement(device);
     if (measurement != null) {
       _logParsedMeasurement(measurement);
@@ -897,7 +986,6 @@ class HeartRateController extends ChangeNotifier {
   void _startDemo() {
     _gattRetryTimer?.cancel();
     _gattRetryTimer = null;
-    _teardownGattSession();
     _isDemo = true;
     _status = MonitorStatus.idle;
     _errorMessage = null;
@@ -925,12 +1013,28 @@ class HeartRateController extends ChangeNotifier {
   void _stopDemo({bool notify = true}) {
     _demoTimer?.cancel();
     _demoTimer = null;
+    final hasSelectedDevice = _selectedDevice != null;
     _isDemo = false;
-    _status = MonitorStatus.idle;
+    _status = hasSelectedDevice ? MonitorStatus.receiving : MonitorStatus.idle;
     _clearMeasurement();
+    if (hasSelectedDevice) {
+      _sessionStartedAt = DateTime.now();
+      _gattRetryDelay = _gattRetryMinimum;
+    }
     if (notify) {
       _notify();
     }
+  }
+
+  Future<void> _resumeSelectedDevice() async {
+    final selected = _selectedDevice;
+    if (_disposed || selected == null || _isDemo) {
+      return;
+    }
+    if (!_gattConnected && !_isScanning) {
+      await _startPersistentScan();
+    }
+    await _ensureGattSession();
   }
 
   void _clearMeasurement() {
@@ -1019,6 +1123,23 @@ bool advertisesHeartRateService(BleDevice device) {
       service,
       HeartRateController.heartRateServiceUuid,
     ),
+  );
+}
+
+bool isHeartRateCandidate(BleDevice device) {
+  if (advertisesHeartRateService(device)) {
+    return true;
+  }
+  if (device.serviceData.keys.any(
+    (service) => BleUuidParser.compareStrings(
+      service,
+      HeartRateController.heartRateServiceUuid,
+    ),
+  )) {
+    return true;
+  }
+  return device.manufacturerDataList.any(
+    (data) => data.companyId == HeartRateController.xiaomiCompanyId,
   );
 }
 

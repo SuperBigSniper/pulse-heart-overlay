@@ -244,9 +244,7 @@ class _ScanSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final count = controller.scanDevices.length;
-    final text = heartRateOnly
-        ? '发现 $count 台广播心率设备'
-        : '发现 $count 台蓝牙设备';
+    final text = heartRateOnly ? '找到 $count 台心率候选设备' : '发现 $count 台蓝牙设备';
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 14),
       child: Row(
@@ -309,7 +307,7 @@ class _DeviceList extends StatelessWidget {
                 scanning
                     ? '请确认手环已开启「运动心率广播」并靠近电脑。'
                     : '可刷新搜索或切换到所有蓝牙设备。小米手环需在'
-                        '「设置 → 锻炼 → 心率广播」开启广播后才会对外发送心率。',
+                          '「设置 → 锻炼 → 心率广播」开启广播后才会对外发送心率。',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: AppColors.inkMuted,
@@ -331,10 +329,12 @@ class _DeviceList extends StatelessWidget {
         final device = devices[index];
         final supportsHeartRate = advertisesHeartRateService(device);
         final isLastDevice = device.deviceId == lastDeviceId;
+        final isCachedLastDevice = isLastDevice && device.rssi == null;
         return _DeviceRow(
           device: device,
           supportsHeartRate: supportsHeartRate,
           isLastDevice: isLastDevice,
+          isCachedLastDevice: isCachedLastDevice,
           onSelect: () => onSelect(device),
         );
       },
@@ -347,12 +347,14 @@ class _DeviceRow extends StatelessWidget {
     required this.device,
     required this.supportsHeartRate,
     required this.isLastDevice,
+    required this.isCachedLastDevice,
     required this.onSelect,
   });
 
   final BleDevice device;
   final bool supportsHeartRate;
   final bool isLastDevice;
+  final bool isCachedLastDevice;
   final Future<void> Function() onSelect;
 
   @override
@@ -409,7 +411,10 @@ class _DeviceRow extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    _deviceSubtitle(device),
+                    _deviceSubtitle(
+                      device,
+                      isCachedLastDevice: isCachedLastDevice,
+                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -423,8 +428,11 @@ class _DeviceRow extends StatelessWidget {
             const SizedBox(width: 12),
             FilledButton.icon(
               onPressed: onSelect,
-              icon: const Icon(Icons.check_circle_outline, size: 16),
-              label: const Text('选择'),
+              icon: Icon(
+                isCachedLastDevice ? Icons.refresh : Icons.check_circle_outline,
+                size: 16,
+              ),
+              label: Text(isCachedLastDevice ? '重连' : '选择'),
               style: FilledButton.styleFrom(
                 minimumSize: const Size(86, 38),
                 padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -436,7 +444,10 @@ class _DeviceRow extends StatelessWidget {
     );
   }
 
-  String _deviceSubtitle(BleDevice device) {
+  String _deviceSubtitle(BleDevice device, {required bool isCachedLastDevice}) {
+    if (isCachedLastDevice) {
+      return '上次连接设备，可直接尝试重连  ·  ${device.deviceId}';
+    }
     final parts = <String>[];
     if (device.rssi != null) {
       parts.add('${device.rssi} dBm');

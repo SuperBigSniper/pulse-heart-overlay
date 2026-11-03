@@ -30,8 +30,8 @@
 //
 // Unlike universal_ble's Windows implementation, discovery is scoped to the
 // heart rate service only (GetGattServicesForUuidAsync), so the band's
-// protected HID service (0x1812) is never enumerated and no system pairing is
-// required.
+// protected HID service (0x1812) is never enumerated. This avoids requiring
+// bonding merely to enumerate the HID service.
 //
 // Lifetime: instances are shared_ptr-managed. Native async operations and
 // event handlers capture a shared_ptr, so the object outlives any in-flight
@@ -71,10 +71,14 @@ class HeartRateChannel : public std::enable_shared_from_this<HeartRateChannel> {
       winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
           GattCharacteristic const& sender,
       winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
-          GattValueChangedEventArgs const& args);
+          GattValueChangedEventArgs const& args,
+      std::uint64_t generation);
   void OnConnectionStatusChanged(
       winrt::Windows::Devices::Bluetooth::BluetoothLEDevice const& sender,
-      winrt::Windows::Foundation::IInspectable const& args);
+      winrt::Windows::Foundation::IInspectable const& args,
+      std::uint64_t generation);
+
+  bool IsGenerationCurrent(std::uint64_t generation);
 
   // Dart-facing notifications. Must be invoked on the platform thread.
   void NotifyState(const std::string& state, const std::string& detail);
