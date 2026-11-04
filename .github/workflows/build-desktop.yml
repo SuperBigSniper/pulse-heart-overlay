@@ -3,6 +3,7 @@ name: Build desktop
 on:
   workflow_dispatch:
   push:
+    branches: ['main']
     tags: ['v*']
   pull_request:
 
@@ -11,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -32,31 +33,31 @@ jobs:
       - run: flutter test
 
       - name: Build macOS
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
+        if: runner.os == 'macOS'
         run: flutter build macos --release
 
       - name: Build Windows
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        if: runner.os == 'Windows'
         run: flutter build windows --release
 
       - name: Package macOS app
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
+        if: runner.os == 'macOS'
         run: ditto -c -k --keepParent build/macos/Build/Products/Release/Pulse.app pulse-macos.zip
 
       - name: Package Windows app
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath pulse-windows.zip
 
       - name: Upload macOS app
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
           name: pulse-macos
           path: pulse-macos.zip
 
       - name: Upload Windows app
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: pulse-windows
