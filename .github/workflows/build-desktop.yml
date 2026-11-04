@@ -11,8 +11,35 @@ permissions:
   contents: write
 
 jobs:
+  # 版本号提交推 main 且同一 commit 打了 v* tag 时，tag push 会触发一次
+  # 完整的发布构建；这次分支 push 的运行是纯重复，直接跳过。
+  guard:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          git fetch --tags --force
+          if git tag --points-at HEAD | grep -qE '^v'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: guard
+    if: >-
+      always() && (
+        startsWith(github.ref, 'refs/tags/') ||
+        github.event_name == 'pull_request' ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.guard.outputs.skip == 'false'
+      )
     strategy:
       fail-fast: false
       matrix:
