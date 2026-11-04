@@ -1,0 +1,173 @@
+Resolving dependencies...
+Downloading packages...
+  material_color_utilities 0.13.0 (0.13.1 available)
+  objective_c 9.6.2 (9.6.3 available)
+  screen_retriever 0.2.2 (0.3.1 available)
+  test_api 0.7.12 (0.7.15 available)
+  window_manager 0.5.1 (0.6.0 available)
+Got dependencies!
+5 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+
+::group::✅ Passing tests
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/ble_device_merge_test.dart: merging a system device preserves advertised heart rate services
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/ble_device_merge_test.dart: merging an older advertisement does not replace stronger data
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/ble_device_merge_test.dart: heart-rate candidates include Xiaomi manufacturer broadcasts
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/ble_device_merge_test.dart: heart-rate candidates include 180D service data
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/ble_device_merge_test.dart: unrelated BLE devices are not heart-rate candidates
+::endgroup::
+::group::✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/game_overlay_page_test.dart: game overlay shows only the live heart rate
+[HeartRate] first reading: bpm=84
+::endgroup::
+::group::✅ Passing tests
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/game_overlay_page_test.dart: corner resizing adjusts width and height independently
+::endgroup::
+::group::✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/game_overlay_page_test.dart: game overlay renders with a custom aspect ratio
+[HeartRate] first reading: bpm=84
+::endgroup::
+::group::✅ Passing tests
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/game_overlay_settings_dialog_test.dart: game overlay settings can be saved
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: visual heartbeat rate follows the measured BPM
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: visual heartbeat rate changes continuously between tested values
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: user speed scale changes the tempo without changing the BPM
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: visual heartbeat rate stays within the supported sensor range
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: heartbeat contraction strength follows emotional intensity
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: ECG waveform scrolls from left to right with the heartbeat
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: heartbeat impulse returns to rest during a cycle
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: visualizer renders and animates without a Bluetooth device
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: running animation adopts a new BPM period immediately
+::endgroup::
+::group::✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heartbeat_timing_test.dart: live readings do not notify connection and history widgets
+[HeartRate] first reading: bpm=84
+::endgroup::
+::group::✅ Passing tests
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_chart_test.dart: paints an empty display list without throwing
+::endgroup::
+::group::❌ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_page_test.dart: selecting a point stores and displays its note (failed)
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following MissingPluginException was thrown running a test:
+MissingPluginException(No implementation found for method unsubscribe on channel pulse/heart_rate)
+
+When the exception was thrown, this was the stack:
+#0      MethodChannel._invokeMethod (package:flutter/src/services/platform_channel.dart:364:7)
+<asynchronous suspension>
+#1      WindowsHeartRateChannel.unsubscribe (package:heartbeat_monitor/src/heart_rate/windows_heart_rate_channel.dart:47:5)
+<asynchronous suspension>
+
+The test description was:
+  selecting a point stores and displays its note
+════════════════════════════════════════════════════════════════════════════════════════════════════
+Test failed. See exception logs above.
+The test description was: selecting a point stores and displays its note
+
+::endgroup::
+::group::❌ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_page_test.dart: closing history resumes live widgets after unmounting (failed)
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following MissingPluginException was thrown running a test:
+MissingPluginException(No implementation found for method unsubscribe on channel pulse/heart_rate)
+
+When the exception was thrown, this was the stack:
+#0      MethodChannel._invokeMethod (package:flutter/src/services/platform_channel.dart:364:7)
+<asynchronous suspension>
+#1      WindowsHeartRateChannel.unsubscribe (package:heartbeat_monitor/src/heart_rate/windows_heart_rate_channel.dart:47:5)
+<asynchronous suspension>
+
+The test description was:
+  closing history resumes live widgets after unmounting
+════════════════════════════════════════════════════════════════════════════════════════════════════
+Test failed. See exception logs above.
+The test description was: closing history resumes live widgets after unmounting
+
+::endgroup::
+::group::❌ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_page_test.dart: an open history page follows new points on its own (failed)
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following MissingPluginException was thrown running a test:
+MissingPluginException(No implementation found for method unsubscribe on channel pulse/heart_rate)
+
+When the exception was thrown, this was the stack:
+#0      MethodChannel._invokeMethod (package:flutter/src/services/platform_channel.dart:364:7)
+<asynchronous suspension>
+#1      WindowsHeartRateChannel.unsubscribe (package:heartbeat_monitor/src/heart_rate/windows_heart_rate_channel.dart:47:5)
+<asynchronous suspension>
+
+The test description was:
+  an open history page follows new points on its own
+════════════════════════════════════════════════════════════════════════════════════════════════════
+Test failed. See exception logs above.
+The test description was: an open history page follows new points on its own
+
+::endgroup::
+::group::✅ Passing tests
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_stress_test.dart: loads and caps a 120k-point history within the stress budget
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_stress_test.dart: sustained inserts at the cap stay bounded
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_page_test.dart: history switches between separate connection sessions
+::endgroup::
+::group::❌ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_stress_test.dart: rapid range changes keep one latest snapshot request (failed)
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following MissingPluginException was thrown running a test:
+MissingPluginException(No implementation found for method unsubscribe on channel pulse/heart_rate)
+
+When the exception was thrown, this was the stack:
+#0      MethodChannel._invokeMethod (package:flutter/src/services/platform_channel.dart:364:7)
+<asynchronous suspension>
+#1      WindowsHeartRateChannel.unsubscribe (package:heartbeat_monitor/src/heart_rate/windows_heart_rate_channel.dart:47:5)
+<asynchronous suspension>
+
+The test description was:
+  rapid range changes keep one latest snapshot request
+════════════════════════════════════════════════════════════════════════════════════════════════════
+Test failed. See exception logs above.
+The test description was: rapid range changes keep one latest snapshot request
+
+::endgroup::
+::group::✅ Passing tests
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: classifies heart rate zones at the documented boundaries
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: persists every point and point-level note across reloads
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: samples multiple broadcasts in the same second once
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: persists each device connection as a separate session
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: deleting a session removes only its points and notes
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: deleteSessions removes many sessions in one pass and skips unknown
+::endgroup::
+::group::❌ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: the first pending point starts the save window (failed)
+PathAccessException: Deletion failed, path = 'C:\Users\RUNNER~1\AppData\Local\Temp\pulse-history-test-6015244f' (OS Error: The process cannot access the file because it is being used by another process, errno = 32)
+dart:io                                   FileSystemEntity.delete
+test\heart_rate_history_test.dart 269:33  main.<fn>.<fn>
+::endgroup::
+::group::✅ Passing tests
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: max pending batch forces an early flush
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: clear all removes persisted points and notes
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: drops readings older than the retention period on load
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: enforces the maximum stored point count
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: downsampling preserves extremes, edges, and annotated points
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_test.dart: chart hit testing selects the point nearest to the tapped time
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_measurement_test.dart: HeartRateMeasurement.tryParse parses an 8-bit heart rate
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_measurement_test.dart: HeartRateMeasurement.tryParse parses a 16-bit heart rate and sensor contact
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_measurement_test.dart: HeartRateMeasurement.tryParse parses energy expended and R-R intervals
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_measurement_test.dart: HeartRateMeasurement.tryParse rejects malformed or implausible values
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_subscription_test.dart: uses notifications when the device accepts them
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_subscription_test.dart: falls back to indications when notifications fail
+✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_subscription_test.dart: reports both failures when indications also fail
+::endgroup::
+::group::❌ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/heart_rate_history_stress_test.dart: default 100k pipeline compacts, opens all, and refreshes (failed)
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following MissingPluginException was thrown running a test:
+MissingPluginException(No implementation found for method unsubscribe on channel pulse/heart_rate)
+
+When the exception was thrown, this was the stack:
+#0      MethodChannel._invokeMethod (package:flutter/src/services/platform_channel.dart:364:7)
+<asynchronous suspension>
+#1      WindowsHeartRateChannel.unsubscribe (package:heartbeat_monitor/src/heart_rate/windows_heart_rate_channel.dart:47:5)
+<asynchronous suspension>
+
+The test description was:
+  default 100k pipeline compacts, opens all, and refreshes
+════════════════════════════════════════════════════════════════════════════════════════════════════
+Test failed. See exception logs above.
+The test description was: default 100k pipeline compacts, opens all, and refreshes
+
+::endgroup::
+::group::✅ D:/a/pulse-heart-overlay/pulse-heart-overlay/test/monitor_page_test.dart: wide monitor layout renders with the split detail panel
+[HeartRate] first reading: bpm=84
+::endgroup::
+
+::error::43 tests passed, 6 failed.
