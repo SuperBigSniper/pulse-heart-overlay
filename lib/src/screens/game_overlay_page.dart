@@ -216,9 +216,8 @@ class _OverlayHeartRateView extends StatelessWidget {
                   canvasSize.height)
               .clamp(0.15, 0.85)
               .toDouble();
-    // 浮层文字可读性用"描边式阴影"：四方向小偏移 + 小模糊，紧贴字形。
-    // 之前的大模糊重阴影（blur ~6、alpha 0.92）在小字号下会让相邻字形的
-    // 阴影互相融合成一整块灰底，看起来就像文字带了个边框。
+    // 浮层文字只保留一层柔和下投影保证可读性，不再用四方向描边，
+    // 避免在浅色游戏画面上看起来像文字带了一圈边框。
     final textShadows = _overlayTextShadows(numberSize);
 
     return HeartbeatMotion(
@@ -300,24 +299,9 @@ class _OverlayHeartRateView extends StatelessWidget {
   }
 }
 
-/// 游戏浮层文字的描边式阴影：四方向偏移贴出字形轮廓，叠一层轻微下投影。
-/// 描边宽度随字号等比缩放，窗口放大后不会出现糊成色块的大模糊阴影。
-List<Shadow> _overlayTextShadows(double fontSize) {
-  final stroke = math.max(1.0, fontSize * 0.055);
-  final blur = stroke * 1.2;
-  final outline = AppColors.ink.withValues(alpha: 0.8);
-  return [
-    Shadow(color: outline, offset: Offset(-stroke, 0), blurRadius: blur),
-    Shadow(color: outline, offset: Offset(stroke, 0), blurRadius: blur),
-    Shadow(color: outline, offset: Offset(0, -stroke), blurRadius: blur),
-    Shadow(color: outline, offset: Offset(0, stroke), blurRadius: blur),
-    Shadow(
-      color: AppColors.ink.withValues(alpha: 0.3),
-      offset: Offset(0, stroke),
-      blurRadius: stroke * 2,
-    ),
-  ];
-}
+/// 游戏浮层文字不再加任何阴影：描边和模糊阴影都会在字形周围形成
+/// 可见的"边框/光晕"，浅色画面上尤其明显。
+List<Shadow> _overlayTextShadows(double fontSize) => const [];
 
 class _OverlayResizeHandle extends StatefulWidget {
   const _OverlayResizeHandle({
