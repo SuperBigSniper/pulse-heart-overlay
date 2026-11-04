@@ -153,11 +153,18 @@ _HistorySnapshotData _buildHistorySnapshotData({
 }
 
 class _HeartRateHistoryPageState extends State<HeartRateHistoryPage> {
+  /// Sessions above this size rebuild through the isolate worker, so their
+  /// live refresh is throttled instead of hitching the UI thread every few
+  /// seconds. Matches the default [snapshotWorkerThreshold].
+  static const _largeSnapshotPointThreshold = 5000;
+
   final TextEditingController _noteController = TextEditingController();
   _HistoryRange _range = _HistoryRange.day;
   String? _selectedSessionId;
   HeartRateHistoryPoint? _selectedPoint;
   bool _isSavingNote = false;
+  bool _sessionSelectionMode = false;
+  final Set<String> _selectedSessionIds = <String>{};
   _HistorySnapshot? _snapshot;
   bool _snapshotInFlight = false;
   bool _snapshotQueued = false;
@@ -209,12 +216,35 @@ class _HeartRateHistoryPageState extends State<HeartRateHistoryPage> {
   /// page silently shows a stale snapshot until the user taps 刷新. The
   /// revision arrives in bursts; debounce so a notification storm cannot queue
   /// repeated snapshot rebuilds (the request itself also coalesces).
+  ///
+  /// Rebuilds over tens of thousands of points hand the work to an isolate,
+  /// which copies the whole range and hitches the UI thread each time. At that
+  /// zoom level a few seconds of tail updates are invisible in the downsampled
+  /// line, so large sessions refresh on a slower cadence. Small sessions stay
+  /// on the cheap main-thread path and follow every revision; 刷新 always
+  /// recomputes immediately.
+  Duration get _autoRefreshDelay {
+    final pointCount = _snapshot?.allPointCount ?? 0;
+    if (pointCount <= _largeSnapshotPointThreshold) {
+      return const Duration(milliseconds: 900);
+    }
+    switch (_range) {
+      case _HistoryRange.hour:
+        return const Duration(seconds: 10);
+      case _HistoryRange.day:
+        return const Duration(seconds: 10);
+      case _HistoryRange.week:
+      case _HistoryRange.all:
+        return const Duration(seconds: 30);
+    }
+  }
+
   void _handleSavedHistoryChanged() {
     if (!mounted || !widget.controller.savedHistoryIsLoaded) {
       return;
     }
     _autoRefreshTimer?.cancel();
-    _autoRefreshTimer = Timer(const Duration(milliseconds: 900), () {
+    _autoRefreshTimer = Timer(_autoRefreshDelay, () {
       _autoRefreshTimer = null;
       if (!mounted) {
         return;
@@ -269,6 +299,12 @@ class _HeartRateHistoryPageState extends State<HeartRateHistoryPage> {
                               _selectedSessionId ?? snapshot?.sessionId,
                           onChanged: _setSession,
                           onDelete: _confirmDeleteSession,
+                          selectionMode: _sessionSelectionMode,
+                          selectedSessionIds: _selectedSessionIds,
+                          onToggleSelectionMode: _toggleSessionSelectionMode,
+                          onToggleSession: _toggleSessionSelection,
+                          onSetAllSelected: _setAllSessionsSelected,
+                          onBatchDelete: _confirmDeleteSelectedSessions,
                         ),
                       ),
                       const VerticalDivider(width: 1),
@@ -582,6 +618,102 @@ class _HeartRateHistoryPageState extends State<HeartRateHistoryPage> {
     }
   }
 
+  void _toggleSessionSelectionMode() {
+    setState(() {
+      _sessionSelectionMode = !_sessionSelectionMode;
+      _selectedSessionIds.clear();
+    });
+  }
+
+  void _toggleSessionSelection(HeartRateHistorySession session) {
+    if (session.isActive) {
+      return;
+    }
+    setState(() {
+      if (!_selectedSessionIds.remove(session.id)) {
+        _selectedSessionIds.add(session.id);
+      }
+    });
+  }
+
+  void _setAllSessionsSelected(bool selected) {
+    setState(() {
+      _selectedSessionIds.clear();
+      if (selected) {
+        for (final session in widget.controller.savedHistorySessions) {
+          if (!session.isActive) {
+            _selectedSessionIds.add(session.id);
+          }
+        }
+      }
+    });
+  }
+
+  Future<void> _confirmDeleteSelectedSessions() async {
+    final sessions = widget.controller.savedHistorySessions
+        .where((session) => _selectedSessionIds.contains(session.id))
+        .toList();
+    if (sessions.isEmpty) {
+      return;
+    }
+    final oldest = sessions
+        .reduce((a, b) => a.startedAt.isBefore(b.startedAt) ? a : b);
+    final oldestSource = oldest.source.isEmpty ? '未知设备' : oldest.source;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('删除 ${sessions.length} 个连接会话？'),
+          content: Text(
+            '最早 $oldestSource · ${_formatDateTime(oldest.startedAt)}\n'
+            '这些会话的心率点和备注都会被删除，操作无法撤销。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true) {
+      return;
+    }
+    final deletedCount = await widget.controller.deleteHistorySessions(
+      _selectedSessionIds.toSet(),
+    );
+    if (!mounted) {
+      return;
+    }
+    if (deletedCount > 0) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已删除 $deletedCount 个会话')));
+    }
+    final remaining = widget.controller.savedHistorySessions;
+    final selectedStillExists = remaining.any(
+      (session) => session.id == _selectedSessionId,
+    );
+    setState(() {
+      _sessionSelectionMode = false;
+      _selectedSessionIds.clear();
+      if (!selectedStillExists) {
+        _selectedSessionId = remaining.isEmpty ? null : remaining.first.id;
+        _selectedPoint = null;
+        _noteController.clear();
+        _snapshot = null;
+      }
+    });
+    if (!selectedStillExists) {
+      unawaited(_requestSnapshot(force: true));
+    }
+  }
+
   void _setRange(_HistoryRange range) {
     if (range == _range) {
       return;
@@ -834,43 +966,69 @@ class _SessionListPanel extends StatelessWidget {
     required this.selectedSessionId,
     required this.onChanged,
     required this.onDelete,
+    required this.selectionMode,
+    required this.selectedSessionIds,
+    required this.onToggleSelectionMode,
+    required this.onToggleSession,
+    required this.onSetAllSelected,
+    required this.onBatchDelete,
   });
 
   final List<HeartRateHistorySession> sessions;
   final String? selectedSessionId;
   final ValueChanged<String> onChanged;
   final ValueChanged<HeartRateHistorySession> onDelete;
+  final bool selectionMode;
+  final Set<String> selectedSessionIds;
+  final VoidCallback onToggleSelectionMode;
+  final ValueChanged<HeartRateHistorySession> onToggleSession;
+  final ValueChanged<bool> onSetAllSelected;
+  final VoidCallback onBatchDelete;
 
   @override
   Widget build(BuildContext context) {
+    final deletableCount = sessions.where((session) => !session.isActive).length;
+    final selectedCount = selectedSessionIds.length;
+    final allSelected = deletableCount > 0 && selectedCount == deletableCount;
     return ColoredBox(
       color: AppColors.surface,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
+            padding: const EdgeInsets.fromLTRB(20, 22, 12, 14),
             child: Row(
               children: [
                 const Icon(Icons.link, size: 18, color: AppColors.inkMuted),
                 const SizedBox(width: 9),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    '连接会话',
-                    style: TextStyle(
+                    selectionMode ? '选择要删除的会话' : '连接会话',
+                    style: const TextStyle(
                       color: AppColors.ink,
                       fontSize: 15,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
-                Text(
-                  '${sessions.length}',
-                  style: const TextStyle(
-                    color: AppColors.inkMuted,
-                    fontSize: 10,
-                    fontFeatures: [FontFeature.tabularFigures()],
+                if (!selectionMode)
+                  Text(
+                    '${sessions.length}',
+                    style: const TextStyle(
+                      color: AppColors.inkMuted,
+                      fontSize: 10,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
                   ),
+                IconButton(
+                  onPressed: onToggleSelectionMode,
+                  tooltip: selectionMode ? '退出批量选择' : '批量选择',
+                  icon: Icon(
+                    selectionMode ? Icons.close : Icons.checklist,
+                    size: 18,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  color: selectionMode ? AppColors.coralDark : AppColors.inkMuted,
                 ),
               ],
             ),
@@ -897,14 +1055,56 @@ class _SessionListPanel extends StatelessWidget {
                       return _SessionListTile(
                         session: session,
                         selected: session.id == selectedSessionId,
-                        onTap: () => onChanged(session.id),
-                        onDelete: session.isActive
+                        onTap: selectionMode
+                            ? (session.isActive
+                                  ? null
+                                  : () => onToggleSession(session))
+                            : () => onChanged(session.id),
+                        onDelete: selectionMode || session.isActive
                             ? null
                             : () => onDelete(session),
+                        checked: selectionMode
+                            ? selectedSessionIds.contains(session.id)
+                            : null,
                       );
                     },
                   ),
           ),
+          if (selectionMode) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+              child: Row(
+                children: [
+                  TextButton(
+                    onPressed: deletableCount == 0
+                        ? null
+                        : () => onSetAllSelected(!allSelected),
+                    child: Text(allSelected ? '全不选' : '全选'),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '已选 $selectedCount',
+                    style: const TextStyle(
+                      color: AppColors.inkMuted,
+                      fontSize: 11,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.tonalIcon(
+                    onPressed: selectedCount == 0 ? null : onBatchDelete,
+                    icon: const Icon(Icons.delete_outline, size: 16),
+                    label: const Text('删除'),
+                    style: FilledButton.styleFrom(
+                      foregroundColor: AppColors.coralDark,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -917,16 +1117,21 @@ class _SessionListTile extends StatelessWidget {
     required this.selected,
     required this.onTap,
     this.onDelete,
+    this.checked,
   });
 
   final HeartRateHistorySession session;
   final bool selected;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final VoidCallback? onDelete;
+
+  /// 非空表示处于批量选择模式，值即当前勾选状态。
+  final bool? checked;
 
   @override
   Widget build(BuildContext context) {
     final source = session.source.isEmpty ? '未知设备' : session.source;
+    final selectionMode = checked != null;
     return Material(
       color: selected ? AppColors.coralWash : Colors.transparent,
       borderRadius: BorderRadius.circular(6),
@@ -963,7 +1168,18 @@ class _SessionListTile extends StatelessWidget {
                       ),
                     ),
                   ],
-                  if (onDelete != null) ...[
+                  if (selectionMode) ...[
+                    const SizedBox(width: 4),
+                    Checkbox(
+                      value: checked,
+                      // 进行中的会话不可删除，勾选框保持禁用态。
+                      onChanged: session.isActive
+                          ? null
+                          : (_) => onTap?.call(),
+                      visualDensity: VisualDensity.compact,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ] else if (onDelete != null) ...[
                     const SizedBox(width: 4),
                     IconButton(
                       onPressed: onDelete,

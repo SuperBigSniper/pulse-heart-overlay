@@ -28,6 +28,7 @@ class _HeartbeatMotionState extends State<HeartbeatMotion>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   late final FrameLimitedAnimation _limitedAnimation;
+  bool _reducedMotion = false;
 
   Duration get _duration {
     if (!widget.active) {
@@ -51,6 +52,20 @@ class _HeartbeatMotionState extends State<HeartbeatMotion>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Custom AnimationControllers do not respond to the system's
+    // reduce-motion setting automatically; honor it explicitly. A static
+    // rest pose keeps the semantics (current scale, BPM text) without a
+    // continuously pulsing animation.
+    final reduced = MediaQuery.disableAnimationsOf(context);
+    if (reduced != _reducedMotion) {
+      _reducedMotion = reduced;
+      _restartWithCurrentPhase();
+    }
+  }
+
+  @override
   void didUpdateWidget(covariant HeartbeatMotion oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.active != widget.active ||
@@ -62,11 +77,16 @@ class _HeartbeatMotionState extends State<HeartbeatMotion>
 
   void _restartWithCurrentPhase() {
     _controller.duration = _duration;
-    if (widget.active) {
-      _controller.repeat(period: _duration);
-    } else {
+    if (!widget.active) {
       _controller.stop();
+      return;
     }
+    if (_reducedMotion) {
+      _controller.stop();
+      _controller.value = 0.1;
+      return;
+    }
+    _controller.repeat(period: _duration);
   }
 
   @override
@@ -195,6 +215,7 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   late final FrameLimitedAnimation _limitedController;
+  bool _reducedMotion = false;
 
   @override
   void initState() {
@@ -205,6 +226,19 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
       if (widget.active) {
         _controller.repeat();
       }
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (widget.animation != null) {
+      return;
+    }
+    final reduced = MediaQuery.disableAnimationsOf(context);
+    if (reduced != _reducedMotion) {
+      _reducedMotion = reduced;
+      _restartWithCurrentPhase();
     }
   }
 
@@ -241,11 +275,16 @@ class _HeartbeatVisualizerState extends State<HeartbeatVisualizer>
 
   void _restartWithCurrentPhase() {
     _controller.duration = _duration;
-    if (widget.active) {
-      _controller.repeat(period: _duration);
-    } else {
+    if (!widget.active) {
       _controller.stop();
+      return;
     }
+    if (_reducedMotion) {
+      _controller.stop();
+      _controller.value = 0.1;
+      return;
+    }
+    _controller.repeat(period: _duration);
   }
 
   @override
@@ -303,6 +342,42 @@ class _HeartbeatPainter extends CustomPainter {
   final bool showGuides;
   final bool showShadow;
 
+  // Geometry only changes when the widget is resized; the pulse is applied by
+  // scaling on the canvas, so the paths can be cached across frames. This
+  // painter runs at screen refresh rate in the always-on game overlay, where
+  // per-frame Path allocation is the hottest avoidable cost.
+  static (Offset, double)? _heartPathKey;
+  static Path? _heartPath;
+  static (Offset, double)? _highlightKey;
+  static Path? _highlightPath;
+
+  // Shared paints: the UI thread is single-threaded and each paint is consumed
+  // immediately after mutation, so instances can be reused across frames.
+  static final Paint _guidePaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1
+    ..color = AppColors.ink.withValues(alpha: 0.08);
+  static final Paint _arcPaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..strokeWidth = 2
+    ..color = AppColors.ink.withValues(alpha: 0.28);
+  static final Paint _inkShadowPaint = Paint()
+    ..color = AppColors.ink.withValues(alpha: 0.05);
+  static final Paint _highlightPaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..color = Colors.white.withValues(alpha: 0.42);
+  static final Paint _pulseFillPaint = Paint();
+  static final Paint _pulseStrokePaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1;
+  static final Map<Color, Paint> _accentPaints = <Color, Paint>{};
+
+  static Paint _accentPaint(Color color) {
+    return _accentPaints.putIfAbsent(color, () => Paint()..color = color);
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height * 0.51);
@@ -317,106 +392,38 @@ class _HeartbeatPainter extends CustomPainter {
     }
 
     final scale = active ? 1.0 + impulse * strength : 1.0;
-    final heartPath = _buildHeartPath(center, radius * 0.46);
+    final heartPath = _heartPathFor(center, radius * 0.46);
 
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.scale(scale);
     canvas.translate(-center.dx, -center.dy);
     if (showShadow) {
+      // Draw the shifted copies via canvas.translate instead of Path.shift so
+      // the cached path is reused without allocating a shifted copy per frame.
+      canvas.save();
+      canvas.translate(0, radius * (active ? 0.045 : 0.025));
       canvas.drawPath(
-        heartPath.shift(Offset(0, radius * (active ? 0.045 : 0.025))),
-        Paint()..color = accent.withValues(alpha: active ? 0.12 : 0.06),
+        heartPath,
+        _accentPaint(accent.withValues(alpha: active ? 0.12 : 0.06)),
       );
-      canvas.drawPath(
-        heartPath.shift(Offset(0, radius * 0.018)),
-        Paint()..color = AppColors.ink.withValues(alpha: 0.05),
-      );
+      canvas.restore();
+      canvas.save();
+      canvas.translate(0, radius * 0.018);
+      canvas.drawPath(heartPath, _inkShadowPaint);
+      canvas.restore();
     }
-    canvas.drawPath(heartPath, Paint()..color = accent);
-    _paintHeartHighlight(canvas, center, radius, accent);
+    canvas.drawPath(heartPath, _accentPaint(accent));
+    _paintHeartHighlight(canvas, center, radius);
     canvas.restore();
   }
 
-  void _paintGuides(
-    Canvas canvas,
-    Offset center,
-    double radius,
-    double impulse,
-    double strength,
-    Color accent,
-  ) {
-    final guidePaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1
-      ..color = AppColors.ink.withValues(alpha: 0.08);
-    canvas.drawCircle(center, radius * 0.42, guidePaint);
-    canvas.drawCircle(center, radius * 0.66, guidePaint);
-    canvas.drawCircle(center, radius * 0.91, guidePaint);
-
-    final arcPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = 2
-      ..color = AppColors.ink.withValues(alpha: 0.28);
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius * 0.91),
-      -math.pi * 0.84,
-      math.pi * 0.22,
-      false,
-      arcPaint,
-    );
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius * 0.91),
-      math.pi * 0.16,
-      math.pi * 0.22,
-      false,
-      arcPaint,
-    );
-
-    final pulseOpacity = active ? impulse * (0.15 + strength * 1.1) : 0.04;
-    canvas.drawCircle(
-      center,
-      radius * (0.50 + impulse * 0.30),
-      Paint()..color = accent.withValues(alpha: pulseOpacity),
-    );
-    canvas.drawCircle(
-      center,
-      radius * (0.58 + impulse * 0.18),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
-        ..color = accent.withValues(alpha: pulseOpacity * 1.8),
-    );
-  }
-
-  void _paintHeartHighlight(
-    Canvas canvas,
-    Offset center,
-    double radius,
-    Color accent,
-  ) {
-    final highlight = Path()
-      ..moveTo(center.dx - radius * 0.21, center.dy - radius * 0.18)
-      ..cubicTo(
-        center.dx - radius * 0.15,
-        center.dy - radius * 0.29,
-        center.dx - radius * 0.02,
-        center.dy - radius * 0.29,
-        center.dx + radius * 0.01,
-        center.dy - radius * 0.17,
-      );
-    canvas.drawPath(
-      highlight,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = radius * 0.022
-        ..strokeCap = StrokeCap.round
-        ..color = Colors.white.withValues(alpha: 0.42),
-    );
-  }
-
-  Path _buildHeartPath(Offset center, double scale) {
+  static Path _heartPathFor(Offset center, double scale) {
+    final key = (center, scale);
+    final cached = _heartPath;
+    if (cached != null && _heartPathKey == key) {
+      return cached;
+    }
     final path = Path()
       ..moveTo(center.dx, center.dy + scale * 0.92)
       ..cubicTo(
@@ -452,7 +459,78 @@ class _HeartbeatPainter extends CustomPainter {
         center.dy + scale * 0.92,
       )
       ..close();
+    _heartPathKey = key;
+    _heartPath = path;
     return path;
+  }
+
+  void _paintGuides(
+    Canvas canvas,
+    Offset center,
+    double radius,
+    double impulse,
+    double strength,
+    Color accent,
+  ) {
+    canvas.drawCircle(center, radius * 0.42, _guidePaint);
+    canvas.drawCircle(center, radius * 0.66, _guidePaint);
+    canvas.drawCircle(center, radius * 0.91, _guidePaint);
+
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius * 0.91),
+      -math.pi * 0.84,
+      math.pi * 0.22,
+      false,
+      _arcPaint,
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius * 0.91),
+      math.pi * 0.16,
+      math.pi * 0.22,
+      false,
+      _arcPaint,
+    );
+
+    final pulseOpacity = active ? impulse * (0.15 + strength * 1.1) : 0.04;
+    canvas.drawCircle(
+      center,
+      radius * (0.50 + impulse * 0.30),
+      _pulseFillPaint
+        ..color = accent.withValues(alpha: pulseOpacity),
+    );
+    canvas.drawCircle(
+      center,
+      radius * (0.58 + impulse * 0.18),
+      _pulseStrokePaint
+        ..color = accent.withValues(alpha: pulseOpacity * 1.8),
+    );
+  }
+
+  void _paintHeartHighlight(Canvas canvas, Offset center, double radius) {
+    final key = (center, radius);
+    final cached = _highlightPath;
+    Path highlight;
+    if (cached != null && _highlightKey == key) {
+      highlight = cached;
+    } else {
+      highlight =
+          Path()
+            ..moveTo(center.dx - radius * 0.21, center.dy - radius * 0.18)
+            ..cubicTo(
+              center.dx - radius * 0.15,
+              center.dy - radius * 0.29,
+              center.dx - radius * 0.02,
+              center.dy - radius * 0.29,
+              center.dx + radius * 0.01,
+              center.dy - radius * 0.17,
+            );
+      _highlightKey = key;
+      _highlightPath = highlight;
+    }
+    canvas.drawPath(
+      highlight,
+      _highlightPaint..strokeWidth = radius * 0.022,
+    );
   }
 
   @override
@@ -511,6 +589,18 @@ class _EcgPainter extends CustomPainter {
     growable: false,
   );
 
+  // Shared paints, mutated per frame on the single-threaded UI thread.
+  static final Paint _baselinePaint = Paint()..strokeWidth = 1;
+  static final Paint _glowPaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round
+    ..strokeWidth = 7;
+  static final Paint _linePaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round;
+
   _EcgPainter({
     required this.progress,
     required this.strength,
@@ -528,13 +618,11 @@ class _EcgPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final centerY = size.height * verticalAlignment;
-    final baselinePaint = Paint()
-      ..color = AppColors.ink.withValues(alpha: active ? 0.08 : 0.05)
-      ..strokeWidth = 1;
     canvas.drawLine(
       Offset(0, centerY),
       Offset(size.width, centerY),
-      baselinePaint,
+      _baselinePaint
+        ..color = AppColors.ink.withValues(alpha: active ? 0.08 : 0.05),
     );
     if (!active) {
       return;
@@ -543,42 +631,36 @@ class _EcgPainter extends CustomPainter {
     final path = Path();
     final impulse = heartbeatImpulse(progress);
     final waveScale = 1.0 + impulse * strength * 1.8;
+    final amplitude = size.height * 0.21 * waveScale;
+    final step = size.width / _sampleCount;
 
     for (var index = 0; index <= _sampleCount; index++) {
-      final horizontalFraction = index / _sampleCount;
-      final x = horizontalFraction * size.width;
-      final cycle = ecgCycleFor(horizontalFraction, progress);
+      final cycle = ecgCycleFor(index / _sampleCount, progress);
       final sampleIndex = (cycle * _sampleCount)
           .round()
           .clamp(0, _sampleCount)
           .toInt();
       final value = _waveform[sampleIndex];
-      final y = centerY - value * size.height * 0.21 * waveScale;
+      final y = centerY - value * amplitude;
       if (index == 0) {
-        path.moveTo(x, y);
+        path.moveTo(0, y);
       } else {
-        path.lineTo(x, y);
+        path.lineTo(index * step, y);
       }
     }
 
     if (impulse > 0.01) {
       canvas.drawPath(
         path,
-        Paint()
-          ..style = PaintingStyle.stroke
+        _glowPaint
           ..strokeWidth = 7
-          ..strokeCap = StrokeCap.round
-          ..strokeJoin = StrokeJoin.round
           ..color = color.withValues(alpha: impulse * (0.08 + strength * 0.6)),
       );
     }
     canvas.drawPath(
       path,
-      Paint()
-        ..style = PaintingStyle.stroke
+      _linePaint
         ..strokeWidth = 2.8 + impulse * strength * 8
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
         ..color = color.withValues(alpha: 0.54 + impulse * 0.26),
     );
   }

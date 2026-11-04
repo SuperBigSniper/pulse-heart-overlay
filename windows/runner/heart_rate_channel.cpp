@@ -219,7 +219,13 @@ winrt::fire_and_forget HeartRateChannel::SubscribeAsync(
         return;
       }
     }
-    self->NotifyState(state, detail);
+    // SubscribeAsync resumes on a WinRT thread-pool thread after co_await;
+    // the Flutter messenger must only be invoked from the UI thread.
+    self->PostToUiThread([self, generation, state, detail]() {
+      if (self->IsGenerationCurrent(generation)) {
+        self->NotifyState(state, detail);
+      }
+    });
   };
   try {
     auto device =
@@ -453,6 +459,8 @@ void HeartRateChannel::Unsubscribe() {
   winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::
       GattCharacteristic characteristic{nullptr};
   winrt::Windows::Devices::Bluetooth::BluetoothLEDevice device{nullptr};
+  winrt::event_token value_changed_token{};
+  winrt::event_token connection_status_token{};
   {
     std::lock_guard<std::mutex> lock(mutex_);
     // Always invalidate an in-flight SubscribeAsync, even before it has
@@ -465,6 +473,10 @@ void HeartRateChannel::Unsubscribe() {
     subscribed_ = false;
     characteristic = measurement_;
     device = device_;
+    // Copy the tokens under the lock: an in-flight SubscribeAsync coroutine
+    // may still register new handlers after the lock is released.
+    value_changed_token = value_changed_token_;
+    connection_status_token = connection_status_token_;
     measurement_ = {nullptr};
     device_ = {nullptr};
   }
@@ -472,13 +484,13 @@ void HeartRateChannel::Unsubscribe() {
   // take the same mutex.
   if (characteristic) {
     try {
-      characteristic.ValueChanged(value_changed_token_);
+      characteristic.ValueChanged(value_changed_token);
     } catch (...) {
     }
   }
   if (device) {
     try {
-      device.ConnectionStatusChanged(connection_status_token_);
+      device.ConnectionStatusChanged(connection_status_token);
     } catch (...) {
     }
     try {

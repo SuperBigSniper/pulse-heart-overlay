@@ -140,6 +140,10 @@ class HeartRateController extends ChangeNotifier {
   bool _initialized = false;
   bool _isScanning = false;
   bool _isPersistentScan = false;
+  // Bumped whenever a scan request is superseded (selectDevice/disconnect or
+  // a newer startScan). startScan re-checks it after every await so a stale
+  // dialog scan cannot replace the persistent scan afterwards.
+  int _scanRequestGeneration = 0;
   bool _scanHeartRateOnly = true;
   bool _isDemo = false;
   bool _disposed = false;
@@ -320,8 +324,12 @@ class HeartRateController extends ChangeNotifier {
   Future<void> refreshAvailability() => _refreshAvailability();
 
   Future<void> startScan({required bool heartRateOnly}) async {
+    final scanGeneration = ++_scanRequestGeneration;
     if (_isScanning) {
       await stopScan(notify: false);
+    }
+    if (_disposed || scanGeneration != _scanRequestGeneration) {
+      return;
     }
 
     _errorMessage = null;
@@ -340,18 +348,34 @@ class HeartRateController extends ChangeNotifier {
 
     try {
       await _refreshAvailability();
+      if (_disposed || scanGeneration != _scanRequestGeneration) {
+        return;
+      }
       if (_availability != AvailabilityState.poweredOn) {
         throw Exception(availabilityLabel);
       }
 
-      // Scan without a platform service filter. Some bands stop advertising
-      // 0x180D after disconnect, and Xiaomi heart rate may only be present in
-      // manufacturer data. Filter candidates in Dart instead.
-      await UniversalBle.startScan(skipDuplicates: true);
-
-      // Without a selected device the scan is dialog-driven and stops after
-      // a window; with one selected it must run continuously.
-      if (_selectedDevice == null) {
+      final selectedDevice = _selectedDevice;
+      if (selectedDevice != null) {
+        // A selected band may stream readings through its advertisements:
+        // byte-identical heart-rate packets ARE live readings, so the dialog
+        // scan must not drop duplicates (see the note near the class fields).
+        // Keep the scan unfiltered so the dialog can still list every
+        // Bluetooth device when the user disables the heart-rate filter.
+        await UniversalBle.startScan(skipDuplicates: false);
+        if (_disposed || scanGeneration != _scanRequestGeneration) {
+          return;
+        }
+        // With one selected the dialog scan runs until the dialog closes it.
+      } else {
+        // Scan without a platform service filter. Some bands stop advertising
+        // 0x180D after disconnect, and Xiaomi heart rate may only be present
+        // in manufacturer data. Filter candidates in Dart instead.
+        await UniversalBle.startScan(skipDuplicates: true);
+        if (_disposed || scanGeneration != _scanRequestGeneration) {
+          return;
+        }
+        // The scan is dialog-driven and stops after a window.
         _scanTimer?.cancel();
         _scanTimer = Timer(const Duration(seconds: 14), () {
           unawaited(stopScan());
@@ -359,6 +383,9 @@ class HeartRateController extends ChangeNotifier {
       }
       _notifyScan(immediate: true);
     } on Object catch (error) {
+      if (_disposed || scanGeneration != _scanRequestGeneration) {
+        return;
+      }
       _isScanning = false;
       _setError('无法开始扫描：${_readableError(error)}');
     }
@@ -389,6 +416,9 @@ class HeartRateController extends ChangeNotifier {
     if (_isDemo) {
       _stopDemo(notify: false);
     }
+    // Supersede any in-flight startScan: once the persistent scan below is
+    // up, a stale dialog scan must not replace it with an unfiltered one.
+    _scanRequestGeneration++;
 
     final previousDeviceId = _selectedDevice?.deviceId;
     _endHistorySession();
@@ -421,6 +451,9 @@ class HeartRateController extends ChangeNotifier {
     if (_selectedDevice == null && _status != MonitorStatus.error) {
       return;
     }
+    // Supersede any in-flight startScan so it cannot resurrect a scan after
+    // the selection has been cleared.
+    _scanRequestGeneration++;
 
     final deviceId = _selectedDevice?.deviceId;
     _endHistorySession();
@@ -478,6 +511,22 @@ class HeartRateController extends ChangeNotifier {
     }
     final deleted = await _historyStore.deleteSession(sessionId);
     if (deleted) {
+      _notifySavedHistory(immediate: true);
+    }
+    return deleted;
+  }
+
+  /// 批量删除多个连接会话；正在记录的会话会被自动跳过。
+  /// 返回实际删除的会话数。
+  Future<int> deleteHistorySessions(Set<String> sessionIds) async {
+    final deletable = sessionIds
+        .where((id) => id != _activeHistorySessionId)
+        .toSet();
+    if (deletable.isEmpty) {
+      return 0;
+    }
+    final deleted = await _historyStore.deleteSessions(deletable);
+    if (deleted > 0) {
       _notifySavedHistory(immediate: true);
     }
     return deleted;
@@ -870,7 +919,7 @@ class HeartRateController extends ChangeNotifier {
   /// Events from the runner's native heart rate channel (Windows only).
   void _handleWindowsLinkEvent(WindowsHeartLinkEvent event) {
     final selected = _selectedDevice;
-    if (selected == null || _isDemo) {
+    if (selected == null) {
       return;
     }
     // The native payload carries no address, so only trust events while the
@@ -883,11 +932,18 @@ class HeartRateController extends ChangeNotifier {
     }
     final bytes = event.bytes;
     if (bytes != null) {
+      // Demo readings are synthetic; _handleMeasurementValue drops real ones.
       _handleMeasurementValue(bytes);
       return;
     }
     switch (event.state) {
       case WindowsHeartLinkState.ready:
+        if (_isDemo) {
+          // Demo mode parks the Dart-side link state; the native session
+          // stays up but is ignored. _resumeSelectedDevice re-establishes a
+          // clean session when the demo ends, so do not fake a link here.
+          break;
+        }
         _cancelWindowsLinkWatchdog();
         _gattBusy = false;
         _gattConnected = true;
@@ -905,6 +961,8 @@ class HeartRateController extends ChangeNotifier {
           'native gatt link lost'
           '${event.detail == null || event.detail!.isEmpty ? '' : ': ${event.detail}'}',
         );
+        // Link-down is handled even in demo mode: dropping it would leave a
+        // stale "connected" flag that blocks every later reconnect path.
         _handleWindowsLinkDown();
       case WindowsHeartLinkState.error:
         _log('native gatt error: ${event.detail}');
@@ -1034,8 +1092,25 @@ class HeartRateController extends ChangeNotifier {
       _log('availability: ${availability.name}');
     }
     _availability = availability;
-    if (availability != AvailabilityState.poweredOn && _isScanning) {
-      unawaited(stopScan(notify: false));
+    if (availability != AvailabilityState.poweredOn) {
+      if (_isScanning) {
+        unawaited(stopScan(notify: false));
+      }
+      // The radio is off, so any GATT link is dead — even if the platform
+      // never delivered a disconnect event. Reset the link state now;
+      // otherwise a stale _gattConnected or a lingering retry timer would
+      // block every recovery path once the radio comes back.
+      if (_gattConnected || _gattBusy || _windowsLinkDeviceId != null) {
+        _teardownGattSession();
+        _gattBusy = false;
+        _gattRetryTimer?.cancel();
+        _gattRetryTimer = null;
+      }
+    } else if (_selectedDevice != null && !_isDemo) {
+      // Radio is back: drive the reconnection here instead of waiting for an
+      // advertisement that may never arrive (the band can stay silent while
+      // bonded). _ensureGattSession's guards make this safe to call blindly.
+      unawaited(_ensureGattSession());
     }
     _notifyConnection();
   }
@@ -1307,6 +1382,15 @@ class HeartRateController extends ChangeNotifier {
     _endHistorySession();
     _gattRetryTimer?.cancel();
     _gattRetryTimer = null;
+    _cancelWindowsLinkWatchdog();
+    // Park the Dart-side link state while synthetic readings take over. Any
+    // in-flight attempt or stale "connected" flag would otherwise survive the
+    // demo and block reconnect once it ends. The native session (if any) is
+    // left running but ignored; disconnect events still update the state
+    // machine so exiting the demo can reconnect cleanly.
+    _windowsLinkDeviceId = null;
+    _gattBusy = false;
+    _gattConnected = false;
     _isDemo = true;
     _status = MonitorStatus.idle;
     _errorMessage = null;

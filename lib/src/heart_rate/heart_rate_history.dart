@@ -349,6 +349,8 @@ class HeartRateHistoryStore {
   Future<void>? _loadFuture;
   Directory? _cachedDirectory;
   bool _isLoaded = false;
+  bool _saveRequestedDuringLoad = false;
+  bool _disposed = false;
   bool _replacePointsFile = false;
   bool _compactionPending = false;
   int _appendedSinceCompaction = 0;
@@ -382,9 +384,23 @@ class HeartRateHistoryStore {
     try {
       final directory = await _historyDirectory();
       await _loadPoints(directory);
-      _points.sort(
-        (left, right) => left.recordedAt.compareTo(right.recordedAt),
-      );
+      // The isolate already orders points by their ISO-8601 timestamp, so
+      // this is usually a cheap linear verification; only mixed-format
+      // timestamps from old files need the O(n log n) resort.
+      var sorted = true;
+      for (var index = 1; index < _points.length; index++) {
+        if (_points[index].recordedAt.isBefore(
+          _points[index - 1].recordedAt,
+        )) {
+          sorted = false;
+          break;
+        }
+      }
+      if (!sorted) {
+        _points.sort(
+          (left, right) => left.recordedAt.compareTo(right.recordedAt),
+        );
+      }
       await _loadNotes(directory);
       if (_trimExpired(DateTime.now()) || _replacePointsFile) {
         _scheduleSave();
@@ -393,6 +409,13 @@ class HeartRateHistoryStore {
       _loadError = error;
     } finally {
       _isLoaded = true;
+      // Mutations that arrived while the on-disk history was still being read
+      // must not be lost: replay the deferred save now that the merged state
+      // (loaded + live points, disk notes) is authoritative.
+      if (_saveRequestedDuringLoad) {
+        _saveRequestedDuringLoad = false;
+        _scheduleSave();
+      }
     }
   }
 
@@ -486,7 +509,19 @@ class HeartRateHistoryStore {
       _ensureSessionsForPoints();
       return;
     }
-    final decoded = jsonDecode(await file.readAsString());
+    // Decode in an isolate: the notes file grows with every session, and the
+    // main isolate should not block on JSON parsing during startup.
+    final path = file.path;
+    final Object? decoded;
+    try {
+      decoded = await Isolate.run(
+        () => jsonDecode(File(path).readAsStringSync()),
+      );
+    } on Object {
+      // A damaged notes file must not make the loaded points unusable.
+      _ensureSessionsForPoints();
+      return;
+    }
     if (decoded is! Map) {
       _ensureSessionsForPoints();
       return;
@@ -495,9 +530,15 @@ class HeartRateHistoryStore {
     if (rawNotes is List) {
       for (final rawNote in rawNotes) {
         final note = HeartRateHistoryNote.fromJson(rawNote);
-        if (note != null && _findPointById(note.pointId) != null) {
-          _notes[note.pointId] = note;
+        if (note == null || _findPointById(note.pointId) == null) {
+          continue;
         }
+        // A note edited while the load was in flight refers to a live point;
+        // keep the newer in-memory version over the older disk snapshot.
+        if (_notes.containsKey(note.pointId)) {
+          continue;
+        }
+        _notes[note.pointId] = note;
       }
     }
     final rawSessions = decoded['sessions'];
@@ -553,22 +594,38 @@ class HeartRateHistoryStore {
   }
 
   Future<bool> deleteSession(String sessionId) async {
-    if (!_sessions.containsKey(sessionId)) {
-      return false;
+    return (await deleteSessions({sessionId})) > 0;
+  }
+
+  /// 批量删除多个会话及其心率点，返回实际删除的会话数。
+  ///
+  /// 多个会话只做一次点过滤和一次文件重写，比逐个 [deleteSession] 便宜。
+  Future<int> deleteSessions(Set<String> sessionIds) async {
+    if (sessionIds.isEmpty) {
+      return 0;
     }
-    _sessions.remove(sessionId);
-    if (_activeSessionId == sessionId) {
-      _activeSessionId = null;
+    var deleted = 0;
+    for (final id in sessionIds) {
+      if (_sessions.remove(id) == null) {
+        continue;
+      }
+      if (_activeSessionId == id) {
+        _activeSessionId = null;
+      }
+      deleted++;
+    }
+    if (deleted == 0) {
+      return 0;
     }
     _sortedSessions = null;
-    _points.removeWhere((point) => point.sessionId == sessionId);
-    _pendingPoints.removeWhere((point) => point.sessionId == sessionId);
+    _points.removeWhere((point) => sessionIds.contains(point.sessionId));
+    _pendingPoints.removeWhere((point) => sessionIds.contains(point.sessionId));
     _notes.removeWhere((key, _) => !_hasPointWithId(key));
     _replacePointsFile = true;
     _compactionPending = false;
     _notesRevision++;
     await flush();
-    return true;
+    return deleted;
   }
 
   bool _hasPointWithId(String pointId) => _findPointById(pointId) != null;
@@ -730,6 +787,13 @@ class HeartRateHistoryStore {
   }
 
   Future<void> flush() async {
+    if (!_isLoaded) {
+      // Never write a partial snapshot: finish reading the on-disk history
+      // first so notes/sessions loaded here cannot be overwritten by empty
+      // in-memory maps (explicit flushes from deleteSessions/clearAll and
+      // shutdown both go through this path).
+      await load();
+    }
     _saveTimer?.cancel();
     _saveTimer = null;
     _writeChain = _writeChain
@@ -747,11 +811,22 @@ class HeartRateHistoryStore {
   }
 
   void dispose() {
+    _disposed = true;
     _saveTimer?.cancel();
     _saveTimer = null;
   }
 
   void _scheduleSave() {
+    if (_disposed) {
+      return;
+    }
+    if (!_isLoaded) {
+      // Writing before the load completes would replace the on-disk history
+      // with the (still empty) in-memory snapshot. Defer until load finishes;
+      // [flush] awaits the load future, so nothing is lost.
+      _saveRequestedDuringLoad = true;
+      return;
+    }
     if (_pendingPoints.length >= maxPendingPoints) {
       unawaited(flush().catchError((Object _) {}));
       return;

@@ -35,6 +35,8 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
   static const _overlayPositionLeftKey = 'overlay.positionLeft';
   static const _overlayPositionTopKey = 'overlay.positionTop';
 
+  static final ThemeData _appTheme = buildAppTheme();
+
   late final HeartRateController _controller;
   GameOverlaySettings _overlaySettings = GameOverlaySettings.defaults;
   _DashboardWindowState? _dashboardWindowState;
@@ -137,7 +139,9 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
       locale: const Locale('zh', 'CN'),
       supportedLocales: const [Locale('zh', 'CN')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
-      theme: buildAppTheme(),
+      // Built once instead of per build: rebuilding ThemeData on every state
+      // change (overlay settings, mode switches) re-themes the whole tree.
+      theme: _appTheme,
       home: _isGameOverlay
           ? GameOverlayPage(
               controller: _controller,

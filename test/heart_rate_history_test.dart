@@ -203,6 +203,65 @@ void main() {
     store.dispose();
   });
 
+  test('deleteSessions removes many sessions in one pass and skips unknown',
+      () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'pulse-history-test-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final store = HeartRateHistoryStore(
+      directoryProvider: () async => directory,
+      saveDelay: const Duration(days: 1),
+    );
+    await store.load();
+    final start = DateTime.now().subtract(const Duration(hours: 1));
+    final first = store.startSession(source: 'Band A', startedAt: start);
+    final firstPoint = store.addMeasurement(
+      beatsPerMinute: 70,
+      recordedAt: start.add(const Duration(seconds: 2)),
+      source: 'Band A',
+      sessionId: first.id,
+    )!;
+    await store.saveNote(pointId: firstPoint.id, text: 'first');
+    store.endSession(first.id);
+    final second = store.startSession(
+      source: 'Band B',
+      startedAt: start.add(const Duration(minutes: 10)),
+    );
+    final secondPoint = store.addMeasurement(
+      beatsPerMinute: 90,
+      recordedAt: start.add(const Duration(minutes: 10, seconds: 2)),
+      source: 'Band B',
+      sessionId: second.id,
+    )!;
+    store.endSession(second.id);
+    final third = store.startSession(
+      source: 'Band C',
+      startedAt: start.add(const Duration(minutes: 20)),
+    );
+    final thirdPoint = store.addMeasurement(
+      beatsPerMinute: 80,
+      recordedAt: start.add(const Duration(minutes: 20, seconds: 2)),
+      source: 'Band C',
+      sessionId: third.id,
+    )!;
+
+    expect(
+      await store.deleteSessions({first.id, second.id, 'missing-id'}),
+      2,
+    );
+    expect(store.sessions.map((session) => session.id), <String>[third.id]);
+    expect(store.points.map((point) => point.id), <String>[thirdPoint.id]);
+    expect(store.noteForPoint(firstPoint.id), isNull);
+    expect(store.noteForPoint(thirdPoint.id)?.text, isNull);
+    expect(store.noteForPoint(secondPoint.id), isNull);
+    // 空集合与全部未命中的调用都是无操作。
+    expect(await store.deleteSessions(const <String>{}), 0);
+    expect(await store.deleteSessions({'missing-id'}), 0);
+    expect(store.sessions, hasLength(1));
+    store.dispose();
+  });
+
   test('the first pending point starts the save window', () async {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
