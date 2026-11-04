@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' show FlutterView;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -179,6 +180,13 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
       // 后再显示，避免可见的闪帧。
       await windowManager.hide();
 
+      // 窗口已不可见，立即切 Flutter 树并请求一帧：角落布局的构建与后面
+      // 一串窗口属性修改并行进行（窗口隐藏中，中间帧不可见也无妨）。
+      if (mounted) {
+        setState(() => _isGameOverlay = true);
+      }
+      WidgetsBinding.instance.scheduleForcedFrame();
+
       _overlayMaximumSize = maximumSize;
       final overlaySize = Size(
         _overlaySettings.overlayWidth
@@ -188,32 +196,34 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
             .clamp(GameOverlayPage.minimumWindowSize.height, maximumSize.height)
             .toDouble(),
       );
-      await windowManager.setMinimumSize(GameOverlayPage.minimumWindowSize);
-      await windowManager.setMaximumSize(maximumSize);
-      await windowManager.setResizable(true);
-      if (Platform.isWindows) {
-        await windowManager.setAsFrameless();
-      } else {
-        await windowManager.setTitleBarStyle(
-          TitleBarStyle.hidden,
-          windowButtonVisibility: false,
-        );
-      }
-      await windowManager.setBackgroundColor(Colors.transparent);
-      await windowManager.setAlwaysOnTop(true);
-      await windowManager.setSkipTaskbar(true);
-      if (Platform.isMacOS) {
-        await windowManager.setVisibleOnAllWorkspaces(
-          true,
-          visibleOnFullScreen: true,
-        );
-      }
-
-      await windowManager.setSize(overlaySize);
+      // 纯属性设置按调用顺序批量入队：platform channel 的消息在平台主线程
+      // 仍按此顺序串行执行，但 Dart 侧不再逐条等往返，整段只等最终结果。
+      final commands = <Future<void>>[
+        windowManager.setMinimumSize(GameOverlayPage.minimumWindowSize),
+        windowManager.setMaximumSize(maximumSize),
+        windowManager.setResizable(true),
+        Platform.isWindows
+            ? windowManager.setAsFrameless()
+            : windowManager.setTitleBarStyle(
+                TitleBarStyle.hidden,
+                windowButtonVisibility: false,
+              ),
+        windowManager.setBackgroundColor(Colors.transparent),
+        windowManager.setAlwaysOnTop(true),
+        windowManager.setSkipTaskbar(true),
+        if (Platform.isMacOS)
+          windowManager.setVisibleOnAllWorkspaces(
+            true,
+            visibleOnFullScreen: true,
+          ),
+        windowManager.setSize(overlaySize),
+      ];
       final savedLeft = _overlaySettings.overlayLeft;
       final savedTop = _overlaySettings.overlayTop;
       if (savedLeft == null || savedTop == null) {
-        // 从未记录过位置：默认吸附到右上角。
+        await Future.wait(commands);
+        // 从未记录过位置：默认吸附到右上角。getPosition 需要真实返回值，
+        // 这三个调用只能逐条 await。
         await windowManager.setAlignment(Alignment.topRight);
         final position = await windowManager.getPosition();
         await windowManager.setPosition(
@@ -222,19 +232,26 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
       } else {
         // 恢复上次位置；显示器或分辨率变了时做可见性钳制，至少保留
         // 24 逻辑像素在屏幕内，避免整个浮层漂出屏幕找不到。
-        await windowManager.setPosition(
-          _clampedOverlayPosition(
-            Offset(savedLeft, savedTop),
-            overlaySize,
-            displaySize,
+        commands.add(
+          windowManager.setPosition(
+            _clampedOverlayPosition(
+              Offset(savedLeft, savedTop),
+              overlaySize,
+              displaySize,
+            ),
           ),
         );
+        await Future.wait(commands);
       }
-      // 窗口已经是角落尺寸后才切 Flutter 树，等角落布局真正渲染完成再显示。
-      if (mounted) {
-        setState(() => _isGameOverlay = true);
-        await _waitForNextFrame(const Duration(milliseconds: 120));
-      }
+      // Flutter 树在隐藏期间已切换；等视图尺寸同步为角落尺寸且以其渲染出
+      // 一帧后再显示（详见 _waitForFrameWithViewSize 的说明）。
+      await _waitForFrameWithViewSize(
+        view,
+        (logicalSize) =>
+            (logicalSize.width - overlaySize.width).abs() < 0.5 &&
+            (logicalSize.height - overlaySize.height).abs() < 0.5,
+        const Duration(milliseconds: 120),
+      );
       await windowManager.show(inactive: true);
     } on Object catch (error) {
       debugPrint('Unable to enter game overlay: $error');
@@ -254,6 +271,10 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
       return;
     }
     _isChangingWindowMode = true;
+    // 在任何 await 之前取好 view 和当前（角落）尺寸，后面等帧时要用来
+    // 判断视图度量是否已同步到恢复后的尺寸。
+    final view = View.of(context);
+    final overlayLogicalSize = view.physicalSize / view.devicePixelRatio;
 
     try {
       try {
@@ -271,33 +292,44 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
       // 同进入角落模式：先隐藏窗口，等窗口形态与仪表盘内容都就位再显示，
       // 否则会看到角落布局被拉进大窗口的闪帧。
       await windowManager.hide();
-      await windowManager.setAlwaysOnTop(
-        dashboardState?.isAlwaysOnTop ?? false,
-      );
-      await windowManager.setSkipTaskbar(
-        dashboardState?.isSkipTaskbar ?? false,
-      );
-      if (Platform.isMacOS) {
-        await windowManager.setVisibleOnAllWorkspaces(false);
-      }
-      await windowManager.setMaximumSize(const Size(10000, 10000));
-      await windowManager.setResizable(dashboardState?.isResizable ?? true);
-      await windowManager.setTitleBarStyle(
-        TitleBarStyle.normal,
-        windowButtonVisibility: true,
-      );
-      await windowManager.setBackgroundColor(AppColors.paper);
 
-      final bounds = dashboardState?.bounds;
-      if (bounds != null) {
-        await windowManager.setBounds(bounds);
-      }
-      await windowManager.setMinimumSize(const Size(900, 640));
-
+      // 窗口已不可见，立即切回仪表盘树并请求一帧，构建与后面的窗口属性
+      // 修改并行（窗口隐藏中，中间帧不可见也无妨）。
       if (mounted) {
         setState(() => _isGameOverlay = false);
-        await _waitForNextFrame(const Duration(milliseconds: 120));
       }
+      WidgetsBinding.instance.scheduleForcedFrame();
+
+      // 恢复链批量入队（平台主线程仍按序执行），不再逐条等往返。
+      final bounds = dashboardState?.bounds;
+      await Future.wait(<Future<void>>[
+        windowManager.setAlwaysOnTop(
+          dashboardState?.isAlwaysOnTop ?? false,
+        ),
+        windowManager.setSkipTaskbar(
+          dashboardState?.isSkipTaskbar ?? false,
+        ),
+        if (Platform.isMacOS) windowManager.setVisibleOnAllWorkspaces(false),
+        windowManager.setMaximumSize(const Size(10000, 10000)),
+        windowManager.setResizable(dashboardState?.isResizable ?? true),
+        windowManager.setTitleBarStyle(
+          TitleBarStyle.normal,
+          windowButtonVisibility: true,
+        ),
+        windowManager.setBackgroundColor(AppColors.paper),
+        if (bounds != null) windowManager.setBounds(bounds),
+        windowManager.setMinimumSize(const Size(900, 640)),
+      ]);
+
+      // Flutter 树在隐藏期间已切换；等视图尺寸脱离角落尺寸（即已同步为
+      // 恢复后的尺寸）并以其渲染出一帧再显示（详见 _waitForFrameWithViewSize）。
+      await _waitForFrameWithViewSize(
+        view,
+        (logicalSize) =>
+            (logicalSize.width - overlayLogicalSize.width).abs() > 0.5 ||
+            (logicalSize.height - overlayLogicalSize.height).abs() > 0.5,
+        const Duration(milliseconds: 120),
+      );
       if (dashboardState?.isFullScreen ?? false) {
         await windowManager.setFullScreen(true);
       } else if (dashboardState?.isMaximized ?? false) {
@@ -342,13 +374,43 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
     }
   }
 
-  /// 等待下一帧渲染完成后再继续；若窗口隐藏导致引擎暂停 vsync（endOfFrame
-  /// 永远不来），用超时兜底，最坏情况也只是显示上一帧，不会卡死切换流程。
-  Future<void> _waitForNextFrame(Duration timeout) {
-    return WidgetsBinding.instance.endOfFrame.timeout(
-      timeout,
-      onTimeout: () {},
-    );
+  /// 等待视图尺寸满足 [matches] 且以其至少渲染出一帧后再返回。
+  ///
+  /// setSize/setBounds 的方法调用回复到达，不代表引擎侧的视图度量已同步；
+  /// 这期间被调度出的一帧可能仍按旧窗口尺寸渲染（角落布局画进大窗口），
+  /// 若此时 show()，最后呈现的缓冲区就是那帧旧尺寸画面，肉眼可见地闪一下。
+  ///
+  /// 所以这里循环请求帧（scheduleForcedFrame），直到视图逻辑尺寸满足
+  /// [matches]，再确保以新尺寸多渲染一帧作为呈现内容。窗口隐藏期间部分
+  /// 平台会暂停 vsync（endOfFrame 永远不来），用 [timeout] 总预算兜底：
+  /// 最坏情况也只是在超时后显示上一帧，不会卡死切换流程。
+  Future<void> _waitForFrameWithViewSize(
+    FlutterView view,
+    bool Function(Size logicalSize) matches,
+    Duration timeout,
+  ) async {
+    final deadline = DateTime.now().add(timeout);
+    Future<void> pumpOneFrame() {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) {
+        return Future<void>.value();
+      }
+      WidgetsBinding.instance.scheduleForcedFrame();
+      return WidgetsBinding.instance.endOfFrame.timeout(
+        remaining,
+        onTimeout: () {},
+      );
+    }
+
+    while (DateTime.now().isBefore(deadline)) {
+      // 先校验尺寸再泵帧：尺寸已就位时，即将渲染的这一帧就是新尺寸画面，
+      // 一次泵帧即可返回；未就位时先泵帧给引擎同步度量的机会，再进下轮。
+      if (matches(view.physicalSize / view.devicePixelRatio)) {
+        await pumpOneFrame();
+        return;
+      }
+      await pumpOneFrame();
+    }
   }
 
   /// 把上次保存的浮层位置钳制到屏幕内：至少保留 24 逻辑像素可见。
@@ -379,13 +441,29 @@ class _HeartRateAppState extends State<HeartRateApp> with WindowListener {
   }
 
   Future<_DashboardWindowState> _captureDashboardWindowState() async {
+    // 六个只读查询互不依赖，并行发出只等一次，省掉五次串行往返。
+    final (
+      bounds,
+      isResizable,
+      isAlwaysOnTop,
+      isSkipTaskbar,
+      isMaximized,
+      isFullScreen,
+    ) = await (
+      windowManager.getBounds(),
+      windowManager.isResizable(),
+      windowManager.isAlwaysOnTop(),
+      windowManager.isSkipTaskbar(),
+      windowManager.isMaximized(),
+      windowManager.isFullScreen(),
+    ).wait;
     return _DashboardWindowState(
-      bounds: await windowManager.getBounds(),
-      isResizable: await windowManager.isResizable(),
-      isAlwaysOnTop: await windowManager.isAlwaysOnTop(),
-      isSkipTaskbar: await windowManager.isSkipTaskbar(),
-      isMaximized: await windowManager.isMaximized(),
-      isFullScreen: await windowManager.isFullScreen(),
+      bounds: bounds,
+      isResizable: isResizable,
+      isAlwaysOnTop: isAlwaysOnTop,
+      isSkipTaskbar: isSkipTaskbar,
+      isMaximized: isMaximized,
+      isFullScreen: isFullScreen,
     );
   }
 
