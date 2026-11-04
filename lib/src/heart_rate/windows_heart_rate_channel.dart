@@ -37,14 +37,24 @@ class WindowsHeartRateChannel {
   /// Progress arrives through [events].
   Future<void> subscribe(String address) async {
     _ensureHandler();
-    await _channel.invokeMethod<void>('subscribe', <String, String>{
-      'address': address,
-    });
+    try {
+      await _channel.invokeMethod<void>('subscribe', <String, String>{
+        'address': address,
+      });
+    } on MissingPluginException {
+      // Widget tests run on every platform without the native runner
+      // implementation; production Windows always registers the handler.
+    }
   }
 
   /// Releases the native GATT session. Safe to call when not connected.
   Future<void> unsubscribe() async {
-    await _channel.invokeMethod<void>('unsubscribe');
+    try {
+      await _channel.invokeMethod<void>('unsubscribe');
+    } on MissingPluginException {
+      // Same as [subscribe]: without the native runner (e.g. widget tests on
+      // Windows) there is nothing to release.
+    }
   }
 
   void _ensureHandler() {

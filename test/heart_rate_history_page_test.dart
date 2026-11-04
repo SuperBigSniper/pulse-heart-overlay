@@ -8,6 +8,8 @@ import 'package:heartbeat_monitor/src/screens/heart_rate_history_page.dart';
 import 'package:heartbeat_monitor/src/theme/app_theme.dart';
 import 'package:heartbeat_monitor/src/widgets/heart_rate_history_chart.dart';
 
+import 'file_cleanup.dart';
+
 void main() {
   testWidgets('selecting a point stores and displays its note', (tester) async {
     final start = DateTime.now().subtract(const Duration(minutes: 20));
@@ -31,11 +33,7 @@ void main() {
       }
       await store.flush();
     });
-    addTearDown(() {
-      if (directory.existsSync()) {
-        directory.deleteSync(recursive: true);
-      }
-    });
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final controller = HeartRateController(historyStore: store);
 
     await tester.binding.setSurfaceSize(const Size(1200, 800));
@@ -114,11 +112,7 @@ void main() {
       );
       await store.load();
     });
-    addTearDown(() {
-      if (directory.existsSync()) {
-        directory.deleteSync(recursive: true);
-      }
-    });
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final controller = HeartRateController(historyStore: store);
     final connectionRevision = controller.connectionChanges.value;
 
@@ -190,11 +184,7 @@ void main() {
         );
       }
     });
-    addTearDown(() {
-      if (directory.existsSync()) {
-        directory.deleteSync(recursive: true);
-      }
-    });
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final controller = HeartRateController(historyStore: store);
 
     await tester.binding.setSurfaceSize(const Size(1200, 800));
@@ -286,11 +276,7 @@ void main() {
         );
       }
     });
-    addTearDown(() {
-      if (directory.existsSync()) {
-        directory.deleteSync(recursive: true);
-      }
-    });
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final controller = HeartRateController(historyStore: store);
     await tester.pumpWidget(
       MaterialApp(

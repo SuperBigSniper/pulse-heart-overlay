@@ -9,6 +9,8 @@ import 'package:heartbeat_monitor/src/screens/heart_rate_history_page.dart';
 import 'package:heartbeat_monitor/src/theme/app_theme.dart';
 import 'package:heartbeat_monitor/src/widgets/heart_rate_history_chart.dart';
 
+import 'file_cleanup.dart';
+
 void main() {
   test(
     'loads and caps a 120k-point history within the stress budget',
@@ -16,7 +18,7 @@ void main() {
       final directory = await Directory.systemTemp.createTemp(
         'pulse-history-stress-',
       );
-      addTearDown(() => directory.delete(recursive: true));
+      addTearDown(() => deleteDirectoryWithRetry(directory));
       final pointsFile = File(
         '${directory.path}${Platform.pathSeparator}'
         'pulse_heart_rate_points.ndjson',
@@ -55,7 +57,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-stress-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -106,11 +108,7 @@ void main() {
         );
       }
     });
-    addTearDown(() {
-      if (directory.existsSync()) {
-        directory.deleteSync(recursive: true);
-      }
-    });
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final controller = HeartRateController(historyStore: store);
     await tester.binding.setSurfaceSize(const Size(1200, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -193,11 +191,7 @@ void main() {
         hasLength(100000),
       );
     });
-    addTearDown(() {
-      if (directory.existsSync()) {
-        directory.deleteSync(recursive: true);
-      }
-    });
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     expect(loadElapsed, lessThan(const Duration(seconds: 30)));
     expect(compressionElapsed, lessThan(const Duration(seconds: 30)));
 

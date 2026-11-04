@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:heartbeat_monitor/src/heart_rate/heart_rate_history.dart';
 import 'package:heartbeat_monitor/src/widgets/heart_rate_history_chart.dart';
 
+import 'file_cleanup.dart';
+
 void main() {
   test('classifies heart rate zones at the documented boundaries', () {
     expect(heartRateZoneFor(59), HeartRateZone.low);
@@ -18,7 +20,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -76,7 +78,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -105,7 +107,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -162,7 +164,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -208,7 +210,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -266,7 +268,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(milliseconds: 120),
@@ -309,7 +311,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -348,7 +350,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -378,7 +380,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
@@ -410,7 +412,7 @@ void main() {
     final directory = await Directory.systemTemp.createTemp(
       'pulse-history-test-',
     );
-    addTearDown(() => directory.delete(recursive: true));
+    addTearDown(() => deleteDirectoryWithRetry(directory));
     final store = HeartRateHistoryStore(
       directoryProvider: () async => directory,
       saveDelay: const Duration(days: 1),
