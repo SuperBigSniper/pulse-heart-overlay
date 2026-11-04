@@ -8,7 +8,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -45,6 +45,24 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit $code
           fi
+
+      - name: Publish test log to ci-log branch on failure
+        if: failure() && runner.os == 'Windows'
+        shell: bash
+        run: |
+          git config user.name "ci-log-bot"
+          git config user.email "ci-log-bot@users.noreply.github.com"
+          git fetch origin ci-log || true
+          if git rev-parse --verify origin/ci-log >/dev/null 2>&1; then
+            git checkout --force -B ci-log origin/ci-log
+          else
+            git checkout --force --orphan ci-log
+            git reset --hard
+          fi
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          git add -f test-output.txt
+          git commit -m "windows flutter test log (run ${{ github.run_number }}, ${{ github.sha }})"
+          git push --force origin ci-log
 
       - name: Build macOS
         if: runner.os == 'macOS'
